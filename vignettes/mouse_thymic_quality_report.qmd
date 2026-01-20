@@ -535,7 +535,7 @@ map <- map |> mutate(`ensemble ID` = case_when(
 ))
 
 all_other_markers <- all_other_markers |> select(-row_id) |> left_join(map, by = "marker", copy = T, relationship = "many-to-many") |> distinct()
-all_other_markers
+DT::datatable(all_other_markers, filter = "top")
 ```
 
 
