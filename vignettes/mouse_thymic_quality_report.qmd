@@ -1,0 +1,1338 @@
+---
+title: "Mouse thymic preliminary result"
+author: "Mengyuan Shen"
+format:
+  html:
+    theme: minty
+    df-print: paged
+    code-line-numbers: true
+    embed-resources: true
+    code-fold: true
+    code-fold-default: true
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
+comments:
+  hypothesis:
+    theme: clean
+editor: source
+---
+
+# Introduction
+This report summarizes the preprocessing, quality control, integration and marker visualization of single-cell RNA-seq data generated from mouse thymus samples. The aim of this analysis is to accurately identify high-quality single cells, remove technical artifacts (empty droplets, dead cells, and doublets), and harmonize samples prior to downstream biological interpretation.    
+
+We performed quality control that takes non-empty droplets samples, and remove dead and doublet cells.  Then, each sample was normalized individually and integrated with batch correction. The resulting integrated sample provides an unbiased view of cellular heterogeneity. Finally, we annotated the UMAP using established general TEC signatures and refined subtype-specific markers.
+
+# Set up
+```{r}
+library(targets)
+library(tidySingleCellExperiment)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(Seurat)
+library(HPCell)
+library(scater) 
+library(clustree)
+library(readxl)
+library(tibble)
+library(ggrepel)
+source("/vast/projects/thymic_survive/results/utils.R")
+options(future.globals.maxSize = 8000 * 1024^3)
+samples = list.files("/vast/projects/thymic_survive/results", full.names = T, pattern = "_seurat.rds")
+target_store = "/vast/projects/thymic_survive/hpcell_qc_target_store"
+```
+
+```{r eval=FALSE}
+# Read and save each sample individually to disk
+# Note that demultiplexed.sce has already filtered out empty droplets
+x = readRDS("/vast/projects/thymic_survive/shen.m_M000637_Gray_batch1/extdata/SCEs/M000637_Gray_batch1.demultiplexed.SCE.rds")
+colData = as.data.frame(colData(x))
+rna_counts = counts(x)
+x = CreateSeuratObject(rna_counts, meta.data=colData)
+x |> dplyr::count(Sample)
+seu_list <- x |> group_split(Sample)
+sample_names <- x |> distinct(Sample) |> pull()
+outdir <- "/vast/projects/thymic_survive/results"
+if (!dir.exists(outdir)) dir.create(outdir)
+map2(sample_names, seu_list, ~ saveRDS(.y, file.path(outdir, paste0(.x, "_seurat.rds"))), .progress = T)
+```
+
+
+# Data preprocessing
+Data preprocessing and quality control was performed using HPCell R package. For usage, please refer to [HPCell documentation](https://github.com/MangiolaLaboratory/HPCell) 
+
+```{r eval=FALSE}
+samples |>
+ 
+    initialise_hpc(
+      store = target_store,
+      gene_nomenclature = "ensembl",
+      data_container_type = "seurat_rds",
+      species = "mouse",
+      computing_resources =  crew.cluster::crew_controller_slurm(
+          name = "elastic",
+          workers = 300,
+          tasks_max = 20,
+          seconds_idle = 30,
+          crashes_error = 10,
+          options_cluster = crew.cluster::crew_options_slurm(
+            memory_gigabytes_required = c(10, 20, 40),
+            cpus_per_task = c(2),
+            time_minutes = c(60*4),
+            verbose = TRUE
+          )
+        
+      ),
+      verbosity = "summary",
+      update = "always", 
+      error = "continue",
+      garbage_collection = 100, 
+      workspace_on_error = TRUE
+      
+  ) |> 
+    
+    # Annotation
+    annotate_cell_type(target_empty_droplets = NULL) |> 
+    
+    # Alive
+    remove_dead_scuttle(target_empty_droplets = NULL,
+                        target_annotation = "annotation_tbl", 
+                        group_by = "mouserna.labels.coarse") |>
+    
+    # Doublet
+    remove_doublets_scDblFinder(target_empry_droplets = NULL) |>
+
+    
+    print()
+
+```
+
+```{r}
+data_object <- tar_read(data_object, store = target_store)
+alive_tbl <- tar_read(alive_tbl,store = target_store) |> bind_rows()
+annotation_tbl <- tar_read(annotation_tbl, store = target_store) |> bind_rows()
+doublet_tbl <- tar_read(doublet_tbl, store = target_store) |> bind_rows()
+
+# Assign annotations back to data
+sce = readRDS("/vast/projects/thymic_survive/shen.m_M000637_Gray_batch1/extdata/SCEs/M000637_Gray_batch1.demultiplexed.SCE.rds")
+colData = as.data.frame(colData(sce))
+rna_counts = counts(sce)
+se = CreateSeuratObject(rna_counts, meta.data=colData)
+
+se = se |> left_join(alive_tbl)
+se = se |> left_join(annotation_tbl)
+se = se |> left_join(doublet_tbl)
+```
+
+
+# Data composition
+This section visualizes RNA content metrics for each sample
+
+```{r}
+plot_list <- list()
+for (i in seq_along(data_object)) {
+  sample <- data_object[[i]]
+  name <- unique(data_object[[i]]$Sample) |> as.character()
+  
+  rna_content_scatter = FeatureScatter(sample, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", shuffle = TRUE)
+  plot_list[[name]] <- rna_content_scatter
+}
+```
+
+::: {.panel-tabset group="sample"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (i in seq_along(plot_list)){
+  cat("## ",names(plot_list)[i],"\n")
+  print(plot_list[[i]])
+  cat('\n\n')
+}
+```
+:::
+
+
+# Quality control
+## Barcode rank plot
+The plot was adopted from the data handover script `/vast/projects/thymic_survive/shen.m_M000637_Gray_batch1/code/prepare_SCE.R`. Knee point of the curve (blue dash line), inflection point of the curve (green dash line).
+
+
+```{r}
+knitr::include_graphics("/vast/projects/thymic_survive/barcode_rank_plot.png")
+```
+
+
+## Mitocondrial content
+
+To identify cells with abnormal mitochondrial transcript levels, we evaluated the relationship between mitochondrial UMI counts and mitochondrial percentage for each sample. Mitochondrial cutoff is defined by the median absolute deviation. Cells with mitochondrial proportions above this threshold were flagged as high-mitochondrial and considered low-quality.  
+
+```{r}
+# recompute mito outliers per sample
+se_mito <- se |>
+  group_by(Sample) |>
+  mutate(
+    discard = as.logical(isOutlier(subsets_Mito_percent, type = "higher")),
+    threshold = as.numeric(attr(isOutlier(subsets_Mito_percent, type = "higher"), "threshold")["higher"])
+  ) |>
+  ungroup()
+
+# split by sample
+se_split <- se_mito |> group_split(Sample)
+names(se_split) <- se_mito |> pull(Sample) |> unique()
+
+# build plots
+plot_list_mito <- map(se_split, ~ {
+  smp <- unique(.x$Sample) |> as.character()
+
+  .x %>%
+    as_tibble() %>%
+    ggplot(aes(x = subsets_Mito_sum, y = subsets_Mito_percent)) +
+    geom_point(aes(color = discard), alpha = 0.5) +
+    geom_hline(aes(yintercept = threshold), color = "red", linetype = "dashed") +
+    theme_minimal() +
+    labs(
+      x = "Mitochondrial UMIs",
+      y = "Mitochondrial %",
+      title = smp,
+      color = "High mito%"
+    )
+})
+```
+
+::: {.panel-tabset group="sample"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_mito)) {
+  cat("## ", nm, "\n")
+  print(plot_list_mito[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Visualise alive, doublet percentage
+This section visualise quality control retention rate across samples.
+```{r fig.width=8, fig.height=6}
+qc_per_assay_metadata <- se[[]] |>
+  
+  group_by(Sample) |>
+  summarise(
+    total_cells = n(),
+    alive_cells = sum(alive == TRUE, na.rm=TRUE),
+    dead_cells = sum(is.na(alive) | alive==FALSE, na.rm=TRUE),
+    doublet = sum(scDblFinder.class == "doublet") 
+  ) |>
+  mutate(
+    `Alive Cells` = round(alive_cells / total_cells * 100, 2),
+    `Dead` = round(dead_cells / total_cells * 100, 2),
+    `Doublet` = round(doublet / total_cells * 100, 2)
+  ) |> 
+  collect() |> 
+  tidyr::pivot_longer(cols = c("Alive Cells","Dead", "Doublet"), 
+                      names_to = "Group", values_to = "Percentage")
+
+qc_plot <- qc_per_assay_metadata |>
+  dplyr::filter(Group != "Alive Cells") |> 
+  ggplot(aes(x = reorder(Sample, -Percentage), 
+             y = Percentage,
+             fill = Group)) +
+  geom_bar(position="stack", stat="identity") +
+  scale_y_continuous(
+    limits = c(0, 40),
+    breaks = seq(0, 40, by = 10),
+    labels = function(x) paste0(x, "%")
+  ) +
+  xlab("Sample") +
+  ylab("Cell Percentage") + 
+  theme(axis.text.x = element_text(size = 5, angle = 30, hjust = 1))
+qc_plot
+```
+
+## Remove dead, doublets cells
+```{r eval=FALSE}
+set.seed(123)
+se_filtered <- se |> filter(alive == TRUE, scDblFinder.class != "doublet")
+
+# drop qc metadata columns (Speed up integration!)
+se_filtered <- se_filtered |>
+  select(
+    -matches("^subsets_"),          # mitochondrial/ribo summary
+    -matches("^high_"),             # mito/ribo flags
+    -matches("^mouserna"),          # annotation objects
+  )
+
+out_dir <- "/vast/projects/thymic_survive/results/filtered"
+if (!dir.exists(out_dir)) dir.create(out_dir)
+se_filtered_list <- se_filtered |> group_split(Sample)
+map(se_filtered_list, ~ {
+  sample <- .x |> distinct(Sample) |> pull() 
+ saveRDS(.x, file.path(out_dir, paste0(sample, "_seurat.rds"))) 
+}, .progress = T) 
+```
+
+# Sample integration
+```{r eval=FALSE, echo=FALSE}
+tar_script({
+  library(scater)
+  library(dplyr)
+  library(magrittr)
+  library(tibble)
+  library(targets)
+  library(tarchetypes)
+  library(crew)
+  library(crew.cluster)
+  library(tibble)
+  library(dplyr)
+  library(Seurat)
+  library(tidyseurat)
+  library(stringr)
+  library(purrr)
+  library(targets)
+  library(harmony)
+  options(future.globals.maxSize = 8000 * 1024^3)
+  
+  # =============================================================================
+  # TARGET CONFIGURATION
+  # =============================================================================
+  tar_option_set(
+    memory = "transient", 
+    garbage_collection = 100, 
+    storage = "worker", 
+    retrieval = "worker", 
+    error = "continue", 
+    #cue = tar_cue(mode = "always"),
+    format = "qs", # faster I/O
+    
+    workspace_on_error = TRUE,
+    controller = crew_controller_slurm(
+          script_lines = "#SBATCH --mem 50G",
+          slurm_cpus_per_task = 1, 
+          workers = 300, 
+          tasks_max = 50,
+          verbose = T,
+          crashes_error = 5, 
+          seconds_idle = 30
+        ),
+    trust_object_timestamps = TRUE
+  )
+
+  preprocess_sct <- function(obj) {
+    
+    obj <- SCTransform(
+      obj,
+      method = "glmGamPoi",
+      return.only.var.genes = FALSE,
+      verbose = FALSE
+    )
+    obj
+  }
+
+  # Integrate multiple spatial transcriptomics samples using Harmony batch correction
+  integrate_samples <- function(normalised_seurat_list, npcs = 30, dims = 30, 
+                                batch_var = "sample", saved_directory) {
+    
+    #  Get union of variable features across all SCT-normalised objects
+    features <- unique(unlist(lapply(normalised_seurat_list, VariableFeatures)))
+    
+    # Merge all seurat objects
+    merged <- Reduce(function(x, y) merge(x, y), normalised_seurat_list) 
+    
+    # Assign the union features to the merged object
+    VariableFeatures(merged) <- features
+    
+    merged <- merged |> RunPCA(npcs = npcs, verbose = T) |> 
+      harmony::RunHarmony(group.by.vars = batch_var, verbose=T) |>
+      RunUMAP(reduction = "harmony",  dims = 1:dims, verbose=T)
+    
+    merged |> saveRDS(file.path(saved_directory, "samples_sct_integrated_v1_0_0.rds"))
+    
+    print("File saved successfully ..")
+  }
+
+  list(
+    tar_target(
+      filename,
+      {
+        files <- list.files("/vast/projects/thymic_survive/results/filtered/", full.names = T, pattern = "_seurat.rds")
+        files <- files[ !grepl("multiplet|negative", files) ]
+        files
+      }
+     
+    ),
+    
+    tar_target(
+      samples,
+      readRDS(filename),
+      pattern = map(filename),
+      iteration = "list"
+    ),
+    
+    # Transform each sample individually
+    tar_target(
+      sct_samples,
+      preprocess_sct(samples),
+      pattern = map(samples),
+      iteration = "list"),
+    
+    # Merge samples within each batch (parallel processing)
+    tar_target(
+      merged_samples,
+      integrate_samples(sct_samples, batch_var = "Sample", saved_directory = "/vast/projects/thymic_survive/results/filtered/")
+    )
+  
+
+)}, script = "/vast/projects/thymic_survive/sample_integration_target_script.R", ask = FALSE)
+
+tar_make(
+    script = "/vast/projects/thymic_survive/sample_integration_target_script.R",
+    store = "/vast/projects/thymic_survive/sample_integration_target_store", 
+    reporter = "summary"  )
+
+```
+
+
+# Visualise integrated samples
+After integration, we computed a shared nearest-neighbour (SNN) graph using the Harmony-corrected principal components (PCs 1–30) to capture the underlying structure of the combined dataset. We then applied graph-based clustering across a range of resolution values (0.2–1.0) to explore hierarchical structure and identify both broad cellular compartments and finer subpopulations.  
+```{r}
+integrated_samples <- readRDS("/vast/projects/thymic_survive/results/filtered/samples_sct_integrated_v1_0_0.rds") 
+integrated_samples = integrated_samples |> 
+  FindNeighbors(reduction = "harmony", dims = 1:30, k.param = 15, verbose = FALSE) |>
+  FindClusters(resolution = c(0.2, 0.3,0.4, 0.5,0.6,0.8,1), verbose = FALSE)
+```
+
+# Identify clusters {#coarse-umap}
+To examine the consistency of clustering assignments across resolutions, we visualized cluster transitions using a `clustree` plot, and visualized unsupervised UMAP.
+
+```{r fig.width=8, fig.height=8}
+clustree(integrated_samples, prefix = "SCT_snn_res.")
+```
+
+
+```{r}
+DimPlot(integrated_samples, group.by = "SCT_snn_res.0.6", order = T, cols= my_cols)
+```
+
+# TEC gene signature
+```{r}
+tec_markers <- read_xlsx("/vast/projects/thymic_survive/TEC_gene signature_RNAseq_GrayLab_250925.xlsx", range = "A3:A10")
+
+tec_markers_map <- AnnotationDbi::mapIds(
+      EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+      keys=pull(tec_markers, `general TEC marker`),
+      column="GENEID",
+      keytype="SYMBOL",
+      multiVals = "first"
+    ) |> 
+  enframe("general TEC marker", "ensemble ID")
+
+tec_markers_map <- tec_markers_map |> mutate(`ensemble ID` = case_when(
+  `general TEC marker`=="EpCAM" ~ "ENSMUSG00000045394",
+   `general TEC marker`=="CDH1" ~ "ENSMUSG00000000303",
+  `general TEC marker`=="krt14" ~ "ENSMUSG00000045545",
+  .default = `ensemble ID`
+))
+
+tec_markers_map
+```
+
+# UMAP label by signature
+## General TEC marker
+```{r}
+tec_markers <- tec_markers_map |> deframe()
+plot_list_tec <- purrr::map(names(tec_markers), ~ {
+  
+  ens <- tec_markers[[.x]]
+  FeaturePlot(
+    integrated_samples,
+    features = ens ,
+    order = TRUE,
+    min.cutoff = "q05",
+    max.cutoff = "q95"
+  ) + 
+    patchwork::plot_annotation(title = .x)
+})
+
+# name list by markers for easy tab loop
+names(plot_list_tec) <- names(tec_markers)
+
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_tec)) {
+  cat("## ", nm, "\n")
+  print(plot_list_tec[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+# Marker data frame {#marker-data-frame}
+```{r}
+all_other_markers <- read_xlsx("/vast/projects/thymic_survive/TEC_gene signature_RNAseq_GrayLab_250925.xlsx", range = "A18:P31")
+all_other_markers <- all_other_markers %>%
+  mutate(row_id = row_number()) %>%
+  tidyr::pivot_longer(
+    cols = -row_id,
+    names_to = "group",
+    values_to = "marker"
+  ) |>
+  filter(!is.na(marker), marker != "")
+
+# Add immature population markers 
+new_markers_from_kelin <- tribble(
+  ~row_id, ~group, ~marker,
+  13, "immature", "CCL21a",
+  14, "immature", "Itgb4",
+  15, "immature", "Ly6a",
+  13, "Lung Basal", "Ngfr",
+  14, "Lung Basal", "Smmhc",
+  15, "Lung Basal", "Cd151",
+  13, "Skin basal", "Sox9",
+  14, "Skin basal", "Krtdap",
+)
+
+new_markers_from_daniel <- tribble(
+  ~group, ~marker,
+  "Lung AT2", "Nkx2-1",
+  "Lung AT2", "Foxa2",
+  "Lung AT2", "cebpa", 
+  "Lung AT2", "Sftpb",
+  "Lung AT2", "Sftpc",
+  "Lung AT2", "Sftpd",
+  
+  "Lung AT1", "Ager"
+) |> 
+  group_by(group) |>
+  mutate(row_id = row_number()) |> 
+  ungroup()
+
+all_other_markers <- all_other_markers |> bind_rows(new_markers_from_kelin) |> bind_rows(new_markers_from_daniel)
+
+map <- AnnotationDbi::mapIds(
+      EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+      keys=pull(all_other_markers, marker),
+      column="GENEID",
+      keytype="SYMBOL",
+      multiVals = "first"
+    ) |> 
+  enframe("marker", "ensemble ID")
+
+map <- map |> mutate(`ensemble ID` = case_when(
+  marker == "Clca3b" ~ "ENSMUSG00000037033",
+  marker == "Spink1" ~ "ENSMUSG00000024503",
+  marker == "Adgrf5" ~ "ENSMUSG00000056492",
+  marker == "Tmem131l" ~ "ENSG00000121210",
+  marker == "Mir205hg" ~ "ENSMUSG00000097850",
+  marker == "5430431A17Rik" ~ "ENSMUSG00000108322",
+  marker == "Fads2b" ~ "ENSMUSG00000075217",
+  marker == "CCL21a" ~ "ENSMUSG00000094686",
+  marker == "Smmhc" ~ "ENSMUSG00000018830", # same as Myh11?
+  marker == "cebpa" ~ "ENSMUSG00000034957",
+  .default = `ensemble ID`
+))
+
+all_other_markers <- all_other_markers |> select(-row_id) |> left_join(map, by = "marker", copy = T, relationship = "many-to-many") |> distinct()
+all_other_markers
+```
+
+
+## cTEC
+```{r}
+plot_list_tec <- plot_marker_group("cTEC", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_tec)) {
+  cat("## ", nm, "\n")
+  print(plot_list_tec[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## immature
+```{r}
+plot_list_immature <- plot_marker_group("immature", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_immature)) {
+  cat("## ", nm, "\n")
+  print(plot_list_immature[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Aire-stage
+```{r}
+plot_list_Aire_stage<- plot_marker_group("Aire-stage", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Aire_stage)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Aire_stage[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## EnteroHepato
+```{r}
+plot_list_EnteroHepato<- plot_marker_group("EnteroHepato", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_EnteroHepato)) {
+  cat("## ", nm, "\n")
+  print(plot_list_EnteroHepato[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Microfold 
+```{r}
+plot_list_Microfold<- plot_marker_group("Microfold", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Microfold)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Microfold[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Neuroenbdrocine 
+```{r}
+plot_list_Neuroenbdrocine<- plot_marker_group("Neuroenbdrocine", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Neuroenbdrocine)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Neuroenbdrocine[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ptf1+Pancreatic 
+```{r}
+plot_list_Ptf1_Pancreatic <- plot_marker_group("Ptf1+Pancreatic", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ptf1_Pancreatic)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ptf1_Pancreatic[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Muscle 
+```{r}
+plot_list_Muscle <- plot_marker_group("Muscle", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Muscle)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Muscle[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Tuft 1
+```{r}
+plot_list_Tuft1 <- plot_marker_group("Tuft 1", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Tuft1)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Tuft1[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Tuft 2
+```{r}
+plot_list_Tuft2 <- plot_marker_group("Tuft 2", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Tuft2)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Tuft2[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Globet 
+```{r}
+plot_list_Globet <- plot_marker_group("Globet", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Globet)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Globet[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ionocyte 
+```{r}
+plot_list_Ionocyte <- plot_marker_group("Ionocyte", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ionocyte)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ionocyte[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ciliated 
+```{r}
+plot_list_Ciliated <- plot_marker_group("Ciliated", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ciliated)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ciliated[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung Basal
+```{r}
+plot_list_Lung_Basal <- plot_marker_group("Lung Basal", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Lung_Basal)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Lung_Basal[[nm]])
+  cat("\n\n")
+}
+```
+
+:::
+
+## Skin basal 
+```{r}
+plot_list_Skin_basal  <- plot_marker_group("Skin basal", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Skin_basal)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Skin_basal[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Skin keratinised  
+```{r}
+plot_list_Sikin_keratinised    <- plot_marker_group("Sikin keratinised", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Sikin_keratinised)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Sikin_keratinised[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung AT2
+```{r}
+plot_list_lung_at2    <- plot_all_markers("Lung AT2", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_lung_at2)) {
+  cat("## ", nm, "\n")
+  print(plot_list_lung_at2[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung AT1
+```{r}
+plot_list_lung_at1    <- plot_all_markers("Lung AT1", integrated_samples, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_lung_at1)) {
+  cat("## ", nm, "\n")
+  print(plot_list_lung_at1[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+# Isolate and subcluster purple cluster cl4
+This section isolates purple cluster (cl4) and performs subclustering based on updated markers. Markers listed in [marker data frame](#marker-data-frame) that do not appear in the tab meaning that the marker is not present in the population.
+```{r}
+cl4 <- subset(integrated_samples,  SCT_snn_res.0.6 == "4")
+DefaultAssay(cl4) <- "RNA"
+cl4 <- JoinLayers(cl4, overwrite = TRUE)
+cl4[["SCT"]] <- NULL
+cl4 <- cl4 |>
+  SCTransform(new.assay.name = "SCT_cl4") |>
+  RunPCA(npcs = 30, verbose = FALSE) |> 
+  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
+  RunUMAP(dims = 1:30, verbose = FALSE) |> 
+  FindClusters(resolution = seq(0.2, 0.6, 0.1), verbose = FALSE)
+```
+
+```{r fig.width=8, fig.height=8}
+clustree(cl4, prefix = "SCT_cl4_snn_res.")
+```
+
+```{r}
+DimPlot(cl4, group.by = "SCT_cl4_snn_res.0.2")
+```
+
+# UMAP label by updated markers for isolated [cluster 4](#coarse-umap) 
+
+## cTEC
+```{r}
+plot_list_tec <- plot_all_markers("cTEC", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_tec)) {
+  cat("## ", nm, "\n")
+  print(plot_list_tec[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## immature
+```{r}
+plot_list_immature <- plot_all_markers("immature", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_immature)) {
+  cat("## ", nm, "\n")
+  print(plot_list_immature[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Aire-stage
+```{r}
+plot_list_Aire_stage<- plot_all_markers("Aire-stage", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Aire_stage)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Aire_stage[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## EnteroHepato
+```{r}
+plot_list_EnteroHepato<- plot_all_markers("EnteroHepato", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_EnteroHepato)) {
+  cat("## ", nm, "\n")
+  print(plot_list_EnteroHepato[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Microfold 
+```{r}
+plot_list_Microfold<- plot_all_markers("Microfold", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Microfold)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Microfold[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Neuroenbdrocine 
+```{r}
+plot_list_Neuroenbdrocine<- plot_all_markers("Neuroenbdrocine", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Neuroenbdrocine)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Neuroenbdrocine[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ptf1+Pancreatic 
+```{r}
+plot_list_Ptf1_Pancreatic <- plot_all_markers("Ptf1+Pancreatic", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ptf1_Pancreatic)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ptf1_Pancreatic[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Muscle 
+```{r}
+plot_list_Muscle <- plot_all_markers("Muscle", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Muscle)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Muscle[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Tuft 1
+```{r}
+plot_list_Tuft1 <- plot_all_markers("Tuft 1", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Tuft1)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Tuft1[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Tuft 2
+```{r}
+plot_list_Tuft2 <- plot_all_markers("Tuft 2", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Tuft2)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Tuft2[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Globet 
+```{r}
+plot_list_Globet <- plot_all_markers("Globet", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Globet)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Globet[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ionocyte 
+```{r}
+plot_list_Ionocyte <- plot_all_markers("Ionocyte", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ionocyte)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ionocyte[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Ciliated 
+```{r}
+plot_list_Ciliated <- plot_all_markers("Ciliated", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Ciliated)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Ciliated[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung Basal
+```{r}
+plot_list_Lung_Basal <- plot_all_markers("Lung Basal", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Lung_Basal)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Lung_Basal[[nm]])
+  cat("\n\n")
+}
+```
+
+:::
+
+## Skin basal 
+```{r}
+plot_list_Skin_basal  <- plot_all_markers("Skin basal", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Skin_basal)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Skin_basal[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Skin keratinised  
+```{r}
+plot_list_Sikin_keratinised    <- plot_all_markers("Sikin keratinised", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Sikin_keratinised)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Sikin_keratinised[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung AT2
+```{r}
+plot_list_lung_at2    <- plot_all_markers("Lung AT2", cl4, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_lung_at2)) {
+  cat("## ", nm, "\n")
+  print(plot_list_lung_at2[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+## Lung AT1
+Ager is not found in the cluster 4
+
+
+# Cluster 7
+Cluster 7 separate into two population, one merge with population 6 (aire), one merge with population 0 (immature)
+```{r}
+cl7 <- subset(integrated_samples,  SCT_snn_res.0.6 == "7")
+DefaultAssay(cl7) <- "RNA"
+cl7 <- JoinLayers(cl7, overwrite = TRUE)
+cl7[["SCT"]] <- NULL
+cl7 <- cl7 |>
+  SCTransform(new.assay.name = "SCT_cl7") |>
+  RunPCA(npcs = 30, verbose = FALSE) |> 
+  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
+  RunUMAP(dims = 1:30, verbose = FALSE) |> 
+  FindClusters(resolution = seq(0.2, 0.6, 0.1), verbose = FALSE)
+DimPlot(cl7, group.by = "SCT_cl7_snn_res.0.2")
+```
+
+
+# Cluster 1
+Cluster 1 separate into two cluster, according to two marker, dclk1 and IL10  
+```{r}
+cl1 <- subset(integrated_samples,  SCT_snn_res.0.6 == "1")
+DefaultAssay(cl1) <- "RNA"
+cl1 <- JoinLayers(cl1, overwrite = TRUE)
+cl1[["SCT"]] <- NULL
+cl1 <- cl1 |>
+  SCTransform(new.assay.name = "SCT_cl1") |>
+  RunPCA(npcs = 30, verbose = FALSE) |> 
+  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
+  RunUMAP(dims = 1:30, verbose = FALSE) |> 
+  FindClusters(resolution = seq(0.1, 0.6, 0.1), verbose = FALSE)
+DimPlot(cl1, group.by = "SCT_cl1_snn_res.0.2")
+```
+
+# Recluster
+```{r fig.width=10, fig.height=6}
+# Helper function to extract and name subclusters
+get_subclusters <- function(subset_obj, prefix, resolution_col) {
+  sub_cl <- subset_obj[[resolution_col]][, 1]
+  names(sub_cl) <- colnames(subset_obj)
+  sub_cl_named <- paste0(prefix, sub_cl)
+  names(sub_cl_named) <- names(sub_cl)
+  return(sub_cl_named)
+}
+
+# Start with original cluster assignments
+integrated_samples$combined_cluster <- as.character(integrated_samples$SCT_snn_res.0.6)
+
+# Overwrite subclusters using helper function
+sub_cl4_named <- get_subclusters(cl4, "4_", "SCT_cl4_snn_res.0.2")
+integrated_samples$combined_cluster[names(sub_cl4_named)] <- sub_cl4_named
+
+sub_cl7_named <- get_subclusters(cl7, "7_", "SCT_cl7_snn_res.0.2")
+integrated_samples$combined_cluster[names(sub_cl7_named)] <- sub_cl7_named
+
+sub_cl1_named <- get_subclusters(cl1, "1_", "SCT_cl1_snn_res.0.2")
+integrated_samples$combined_cluster[names(sub_cl1_named)] <- sub_cl1_named
+
+
+# Get all unique cluster labels for factor levels
+all_clusters <- unique(integrated_samples$combined_cluster)
+# Sort to have numeric clusters first, then subclusters
+numeric_clusters <- sort(as.numeric(all_clusters[!grepl("_", all_clusters)]))
+subclusters <- sort(all_clusters[grepl("_", all_clusters)])
+ordered_levels <- c(as.character(numeric_clusters), subclusters)
+
+integrated_samples$combined_cluster <- factor(
+  integrated_samples$combined_cluster,
+  levels = ordered_levels
+)
+
+merged <- as.character(integrated_samples$combined_cluster)
+
+# Step 1: Merge cluster 7 subclusters with clusters 6 and 0
+# 7_0 merges with cluster 6
+merged[merged == "7_0"] <- "6"
+# 7_1 merges with cluster 0
+merged[merged == "7_1"] <- "0"
+
+# Step 2: Merge clusters 5, 6, and 7_0 (which is now "6")
+# All become "5+6"
+merged[merged %in% c("5", "6")] <- "5+6"
+
+# Step 3: Merge clusters 0, 2, and 7_1 (which is now "0")
+# All become "0+2"
+merged[merged %in% c("0", "2")] <- "0+2"
+
+# Step 4: Merge cluster 1 subclusters 1_0 and 1_1
+merged[merged %in% c("1_0", "1_1")] <- "1_0+1_1"
+
+# Save as factor with appropriate levels
+# Get unique values and order them
+unique_merged <- unique(merged)
+# Separate merged clusters from others
+merged_clusters <- unique_merged[grepl("\\+", unique_merged)]
+other_clusters <- unique_merged[!grepl("\\+", unique_merged)]
+# Sort other clusters (numeric first, then subclusters)
+numeric_other <- sort(as.numeric(other_clusters[!grepl("_", other_clusters)]))
+subclusters_other <- sort(other_clusters[grepl("_", other_clusters)])
+final_levels <- c(merged_clusters, as.character(numeric_other), subclusters_other)
+
+integrated_samples$combined_cluster_merged <- factor(merged, levels = final_levels)
+
+integrated_samples<- integrated_samples |>
+  dplyr::left_join(marker_cell_type_tbl, by = c("combined_cluster_merged" = "cluster"), copy=T)|>  
+  mutate(cell_type = ifelse(is.na(cell_type), combined_cluster_merged, cell_type))
+integrated_samples$cell_type <- as.factor(integrated_samples$cell_type)
+
+p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors  ) 
+
+coords <- p$data |>
+  group_by(cell_type) |>
+  summarise(
+    x = median(umap_1),
+    y = median(umap_2)
+  )
+
+p + 
+  geom_text_repel(
+    data = coords,
+    aes(x = x, y = y, label = cell_type),
+    size = 3,
+    min.segment.length = 0,    # allow short or no lines
+    segment.color = "grey50",
+    force = 2,                 # how strongly labels repel each other
+    max.overlaps = 20,
+    box.padding = 0.5,
+    point.padding = 0.3
+  )
+
+```
+
+
+# Investigate AIRE subpopulations
+```{r}
+aire <- subset(integrated_samples,  cell_type == "AIRE")
+DefaultAssay(aire) <- "RNA"
+aire <- JoinLayers(aire, overwrite = TRUE)
+aire[["SCT"]] <- NULL
+aire <- aire |>
+  SCTransform(new.assay.name = "SCT_aire") |>
+  RunPCA(npcs = 30, verbose = FALSE) |> 
+  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
+  RunUMAP(dims = 1:30, verbose = FALSE) |> 
+  FindClusters(resolution = seq(0.1, 0.6, 0.1), verbose = FALSE)
+DimPlot(aire, group.by = "SCT_aire_snn_res.0.1")
+```
+
+## Aire-stage
+```{r}
+plot_list_Aire_stage<- plot_all_markers("Aire-stage", aire, all_other_markers)
+```
+
+::: {.panel-tabset group="marker"}
+```{r fig.width=8, fig.height=6}
+#| output: asis
+for (nm in names(plot_list_Aire_stage)) {
+  cat("## ", nm, "\n")
+  print(plot_list_Aire_stage[[nm]])
+  cat("\n\n")
+}
+```
+:::
+
+# Re-explore AIRE subpopulations
+```{r fig.width=10, fig.height=6}
+integrated_samples$split_aire <- as.character(integrated_samples$cell_type)
+sub_aire_named <- get_subclusters(aire, "aire", "SCT_aire_snn_res.0.1")
+integrated_samples$split_aire[names(sub_aire_named)] <- sub_aire_named
+
+#Get all unique cluster labels for factor levels
+all_clusters <- unique(integrated_samples$split_aire)
+
+p <- DimPlot(integrated_samples, group.by="split_aire", cols = celltype_colors, order = T)
+
+coords <- p$data |>
+  group_by(split_aire) |>
+  summarise(
+    x = median(umap_1),
+    y = median(umap_2)
+  )
+
+p + 
+  geom_text_repel(
+    data = coords,
+    aes(x = x, y = y, label = split_aire),
+    size = 3,
+    min.segment.length = 0,    # allow short or no lines
+    segment.color = "grey50",
+    force = 2,                 # how strongly labels repel each other
+    max.overlaps = 20,
+    box.padding = 0.5,
+    point.padding = 0.3
+  )
+
+```
+
+::: {.callout-note collapse="true"}
+# Session Info
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::
+
+
+
