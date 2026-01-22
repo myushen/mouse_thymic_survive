@@ -9,6 +9,8 @@ format:
     embed-resources: true
     code-fold: true
     code-fold-default: true
+    toc: true
+    toc-location: right 
 knitr:
   opts_chunk:
     message: false
@@ -1164,7 +1166,7 @@ DimPlot(cl1, group.by = "SCT_cl1_snn_res.0.2")
 ```
 
 # Recluster
-```{r fig.width=10, fig.height=6}
+```{r fig.width=10, fig.height=7}
 # Helper function to extract and name subclusters
 get_subclusters <- function(subset_obj, prefix, resolution_col) {
   sub_cl <- subset_obj[[resolution_col]][, 1]
@@ -1237,7 +1239,7 @@ integrated_samples<- integrated_samples |>
   mutate(cell_type = ifelse(is.na(cell_type), combined_cluster_merged, cell_type))
 integrated_samples$cell_type <- as.factor(integrated_samples$cell_type)
 
-p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors  ) 
+p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors ) 
 
 coords <- p$data |>
   group_by(cell_type) |>
@@ -1246,82 +1248,17 @@ coords <- p$data |>
     y = median(umap_2)
   )
 
-p + 
+p +
   geom_text_repel(
     data = coords,
     aes(x = x, y = y, label = cell_type),
-    size = 3,
+    size = 3.5,
     min.segment.length = 0,    # allow short or no lines
     segment.color = "grey50",
     force = 2,                 # how strongly labels repel each other
-    max.overlaps = 20,
-    box.padding = 0.5,
-    point.padding = 0.3
-  )
-
-```
-
-
-# Investigate AIRE subpopulations
-```{r}
-aire <- subset(integrated_samples,  cell_type == "AIRE")
-DefaultAssay(aire) <- "RNA"
-aire <- JoinLayers(aire, overwrite = TRUE)
-aire[["SCT"]] <- NULL
-aire <- aire |>
-  SCTransform(new.assay.name = "SCT_aire") |>
-  RunPCA(npcs = 30, verbose = FALSE) |> 
-  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
-  RunUMAP(dims = 1:30, verbose = FALSE) |> 
-  FindClusters(resolution = seq(0.1, 0.6, 0.1), verbose = FALSE)
-DimPlot(aire, group.by = "SCT_aire_snn_res.0.1")
-```
-
-## Aire-stage
-```{r}
-plot_list_Aire_stage<- plot_all_markers("Aire-stage", aire, all_other_markers)
-```
-
-::: {.panel-tabset group="marker"}
-```{r fig.width=8, fig.height=6}
-#| output: asis
-for (nm in names(plot_list_Aire_stage)) {
-  cat("## ", nm, "\n")
-  print(plot_list_Aire_stage[[nm]])
-  cat("\n\n")
-}
-```
-:::
-
-# Re-explore AIRE subpopulations
-```{r fig.width=10, fig.height=6}
-integrated_samples$split_aire <- as.character(integrated_samples$cell_type)
-sub_aire_named <- get_subclusters(aire, "aire", "SCT_aire_snn_res.0.1")
-integrated_samples$split_aire[names(sub_aire_named)] <- sub_aire_named
-
-#Get all unique cluster labels for factor levels
-all_clusters <- unique(integrated_samples$split_aire)
-
-p <- DimPlot(integrated_samples, group.by="split_aire", cols = celltype_colors, order = T)
-
-coords <- p$data |>
-  group_by(split_aire) |>
-  summarise(
-    x = median(umap_1),
-    y = median(umap_2)
-  )
-
-p + 
-  geom_text_repel(
-    data = coords,
-    aes(x = x, y = y, label = split_aire),
-    size = 3,
-    min.segment.length = 0,    # allow short or no lines
-    segment.color = "grey50",
-    force = 2,                 # how strongly labels repel each other
-    max.overlaps = 20,
-    box.padding = 0.5,
-    point.padding = 0.3
+    box.padding = 0.8,
+    point.padding = 0.3,
+    nudge_y = 0.2
   )
 
 ```

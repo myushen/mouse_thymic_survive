@@ -24,7 +24,7 @@ my_cols_extended <- c(
   "5"  = "#B15928",
   "6"  = "#FFD700",
   "7"  = "#FFA500",
-  "8"  = "#8B4513",
+  "8"  = "#03fcb1",
   "9"  = "#2E8E90",
   "10" = "#20B2AA",
   "11" = "#FF69B4",
@@ -45,13 +45,13 @@ my_cols_combined <- c(
   "1_2" = "black",
   "3"  = "#FF7F00",
   "5+6"  = "#B15928",
-  "8"  = "#8B4513",
+  "8"  = "#03fcb1",
   "9"  = "#2E8E90",
-  "10" = "#20B2AA",
+  "10" = "#cfcf11",
   "11" = "#FF69B4",
   
   # new subclusters under cluster 4
-  "4_0" = "#9400D3",  # deep violet
+  "4_0" = "#b03374",  # deep violet
   "4_1" = "#00CED1",  # dark turquoise
   "4_2" = "#4B0082",   # crimson
   "4_3" = "#7FFF00"   # chartreuse (very distinct),
@@ -63,9 +63,9 @@ marker_cell_type_tbl <- tribble(
   "1_2", "Tuft2",
   "0+2", "Immature",
   "3", "EnteroHepato",
-  "4_0", "Globet",
-  "4_1", "Skin Keratinised, Skin basal",
-  "4_2", "Skin Keratinised, Skin basal",
+  "4_0", "Lung",
+  "4_1", "Skin basal",
+  "4_2", "Skin other",
   "4_3", "Ionocytes",
   "5+6", "AIRE",
   "8", "Microfold",
@@ -74,13 +74,13 @@ marker_cell_type_tbl <- tribble(
   "11", "Ciliated"
 )
 
-cell_type_color_tbl <- c(
-  "aire0" = "#FFD700",
-  "aire1" = "#708090",
-  "aire2" = "#2F2F2F",
-  "aire3" = "#A50021"
-)
-
+# cell_type_color_tbl <- c(
+#   "aire0" = "#FFD700",
+#   "aire1" = "#708090",
+#   "aire2" = "#2F2F2F",
+#   "aire3" = "#A50021"
+# )
+# 
 
 
 celltype_colors <- marker_cell_type_tbl |>
@@ -88,9 +88,9 @@ celltype_colors <- marker_cell_type_tbl |>
     tibble::enframe(my_cols_combined, name="cluster", value="color"),
     by = "cluster"
   ) |>
-  bind_rows(
-    tibble::enframe(cell_type_color_tbl, name="cell_type", value="color")
-  ) |>
+  # bind_rows(
+  #   tibble::enframe(cell_type_color_tbl, name="cell_type", value="color")
+  # ) |>
   dplyr::distinct(cell_type, color) |>
   tibble::deframe()
 
