@@ -1,0 +1,155 @@
+---
+title: "Mouse Genotype Composition analysis"
+author: "Mengyuan Shen"
+format:
+  html:
+    theme: minty
+    df-print: paged
+    code-line-numbers: true
+    embed-resources: true
+    code-fold: true
+    code-fold-default: true
+    toc: true
+    toc-location: right 
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
+comments:
+  hypothesis:
+    theme: clean
+editor: source
+---
+
+# Introduction
+
+This report builds on the mouse thymic project, following quality control report (mouse_thymic_quality_report-2026-01-22.html) and the agreed cell type clusters.
+
+-   Aim: Test whether the composition of TEC clusters differs across genotypes.\
+-   Genotypes:
+    -   WT: baseline.
+    -   BXBN knockout: apoptosis blocked (expected increase in mimetic cells)\
+    -   BU knockout: pro-survival lost (expected decrease in mimetic cells)
+
+# Set up
+```{r}
+library(targets)
+library(tidySingleCellExperiment)
+library(purrr)
+library(dplyr)
+library(stringr)
+library(Seurat)
+library(HPCell)
+library(scater) 
+library(clustree)
+library(readxl)
+library(tibble)
+library(ggrepel)
+if (!requireNamespace("sccomp", quietly = TRUE)) {
+  devtools::install_github("MangiolaLaboratory/sccomp")
+}
+library(sccomp)
+source("/vast/projects/thymic_survive/results/utils.R")
+integrated_samples <-  readRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se.rds") 
+integrated_samples = integrated_samples |> mutate(group = ifelse(group == "BU?", "BXBN", group))
+
+md <- integrated_samples[[]] |>
+  tibble::rownames_to_column("cell") |>
+  mutate(genotype = factor(group, levels =  c("WT","BXBN","BU"))) |> 
+  dplyr::rename(cell_group = cell_type)
+```
+
+# Summary
+## Samples per genotype
+This data frame confirms how many samples contribute to each genotype.
+
+```{r}
+integrated_samples |> dplyr::count(Sample, group) |> arrange(group) 
+```
+
+## Age and sex distribution
+```{r}
+md |> 
+  distinct(Sample, group, Gender, Age) |> 
+  ggplot(aes(x = Age, fill = Gender)) +
+  geom_histogram(
+    position = "dodge",
+    bins = 15
+  ) +
+  facet_wrap(~ group, nrow = 1, scales = "free") +
+  theme_bw() +
+  labs(
+    x = "Mouse Age",
+    y = "Number of samples",
+    fill = "Gender"
+  )
+
+```
+
+## Build composition table
+
+```{r}
+# convert per-cell metadata into a **sample × cell_type** count table required by `sccomp`.
+sample_meta <- md |>
+    distinct(Sample, group, Age, Gender)
+
+df_sccomp <- md |> dplyr::count(Sample, cell_group, name = "cell_count") |> 
+  left_join(sample_meta, by = "Sample") |> 
+  mutate(group = factor(group, levels = c("WT", "BXBN", "BU")),
+         Gender = factor(Gender))
+
+df_sccomp |> as_tibble()
+
+```
+
+# Composition modeling
+
+We fitted a compositional model that estimates how cluster proportions change with genotype while adjusting for phenotypic covariates.\
+Model:
+
+$$ 
+[ \text{composition} \sim \text{genotype_group} + \text{Age} + \text{Gender} ]
+$$
+
+Black boxplots show **observed within-sample proportions**; blue boxplots show **posterior predictive** distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.
+
+```{r}
+res_comp <- sccomp_estimate(
+  .data = df_sccomp,
+  formula_composition = ~ group + Age + Gender,
+  .sample = Sample,
+  .cell_group = cell_group,
+  .count = cell_count,
+  verbose = F
+) |> 
+  
+  # identify outliers probabilistically based on the model fit, and exlcude them from the estimation
+  sccomp_remove_outliers(cores = 1, verbose = FALSE, max_sampling_iterations = 2000) |> 
+  sccomp_test()
+
+p <- res_comp |>
+  sccomp_boxplot(factor = "group",
+                 remove_unwanted_effects = TRUE)
+```
+
+## Visualisation and summary plot
+
+```{r fig.width=10, fig.height=8}
+p
+```
+
+When credible interval is great than 0, cluster is estimated to be more abundant than WT. When credible interval is less than 0, cluster is estimated to be less abundant than WT. Interval crosses 0 means that no strong evidence pf a change vs WT. For example, in BU mice, AIRE cells are credibly increased in proportion compared to the reference genotype.
+
+```{r fig.width=10, fig.height=8}
+res_comp |> 
+  plot_1D_intervals()
+```
+
+::: {.callout-note collapse="true"}
+# Session Info
+
+```{r session-info}
+#| label: session-info
+sessionInfo()
+```
+:::
