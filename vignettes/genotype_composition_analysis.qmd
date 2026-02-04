@@ -1,5 +1,5 @@
 ---
-title: "Mouse Genotype Composition analysis"
+title: "Mouse genotype composition analysis"
 author: "Mengyuan Shen"
 format:
   html:
@@ -32,6 +32,7 @@ This report builds on the mouse thymic project, following quality control report
     -   BU knockout: pro-survival lost (expected decrease in mimetic cells)
 
 # Set up
+
 ```{r}
 library(targets)
 library(tidySingleCellExperiment)
@@ -60,14 +61,17 @@ md <- integrated_samples[[]] |>
 ```
 
 # Summary
+
 ## Samples per genotype
+
 This data frame confirms how many samples contribute to each genotype.
 
 ```{r}
-integrated_samples |> dplyr::count(Sample, group) |> arrange(group) 
+integrated_samples |> dplyr::count(Sample, group) |> arrange(group) |> DT::datatable(filter = "top")
 ```
 
 ## Age and sex distribution
+
 ```{r}
 md |> 
   distinct(Sample, group, Gender, Age) |> 
@@ -98,7 +102,7 @@ df_sccomp <- md |> dplyr::count(Sample, cell_group, name = "cell_count") |>
   mutate(group = factor(group, levels = c("WT", "BXBN", "BU")),
          Gender = factor(Gender))
 
-df_sccomp |> as_tibble()
+df_sccomp |> DT::datatable(filter = "top")
 
 ```
 
@@ -107,11 +111,8 @@ df_sccomp |> as_tibble()
 We fitted a compositional model that estimates how cluster proportions change with genotype while adjusting for phenotypic covariates.\
 Model:
 
-$$ 
-[ \text{composition} \sim \text{genotype_group} + \text{Age} + \text{Gender} ]
-$$
+#  $$ \sim genotype + age + gender$$
 
-Black boxplots show **observed within-sample proportions**; blue boxplots show **posterior predictive** distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.
 
 ```{r}
 res_comp <- sccomp_estimate(
@@ -133,7 +134,9 @@ p <- res_comp |>
 ```
 
 ## Visualisation and summary plot
+Black boxplots show observed within-sample proportions; blue boxplots show posterior predictive distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.  
 
+For example, in the AIRE population, WT shows the lowest within-sample proportion and is used as the baseline for comparison. The AIRE proportion is higher in BXBN than in WT, with the highlighted boxplot indicating a statistically significant difference from WT. Similarly, the AIRE proportion is higher in BU than in WT, and this difference is also statistically significant. In both BXBN and BU genotypes, the blue posterior predictive boxplots closely overlap the black observed boxplots, indicating that the model adequately captures the observed and predicted distributions for the AIRE population. 
 ```{r fig.width=10, fig.height=8}
 p
 ```
