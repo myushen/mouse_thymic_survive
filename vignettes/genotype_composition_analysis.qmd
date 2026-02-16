@@ -133,7 +133,7 @@ p <- res_comp |>
 ## Visualisation and summary plot
 Black boxplots show observed within-sample proportions; blue boxplots show posterior predictive distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.  
 
-For example, in the AIRE population, WT shows the lowest within-sample proportion and is used as the baseline for comparison. The AIRE proportion is higher in BXBN than in WT, with the highlighted boxplot indicating a statistically significant difference from WT. Similarly, the AIRE proportion is higher in BU than in WT, and this difference is also statistically significant. In both BXBN and BU genotypes, the blue posterior predictive boxplots closely overlap the black observed boxplots, indicating that the model adequately captures the observed and predicted distributions for the AIRE population. 
+For example, in the AIRE population, WT shows the lowest within-sample proportion and is used as the baseline for comparison. The AIRE proportion is higher in BXBN than in WT, with the transparent box indicating that the difference from WT is not statistically significant. As a comparison, the AIRE proportion is higher in BU than in WT, and this difference is statistically significant. In both BXBN and BU genotypes, the blue posterior predictive boxplots closely overlap the black observed boxplots, indicating that the model adequately captures the observed and predicted distributions for the AIRE population. 
 ```{r fig.width=10, fig.height=8}
 p
 ```
