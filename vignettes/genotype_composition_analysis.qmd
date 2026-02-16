@@ -52,7 +52,7 @@ if (!requireNamespace("sccomp", quietly = TRUE)) {
 library(sccomp)
 source("/vast/projects/thymic_survive/results/utils.R")
 integrated_samples <-  readRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se.rds") 
-integrated_samples = integrated_samples |> mutate(group = ifelse(group == "BU?", "BXBN", group))
+integrated_samples = integrated_samples |> mutate(group = ifelse(group == "BU?", "WT", group)) # BU?56 is BCLXL wild type
 
 md <- integrated_samples[[]] |>
   tibble::rownames_to_column("cell") |>
@@ -71,16 +71,12 @@ integrated_samples |> dplyr::count(Sample, group) |> arrange(group) |> DT::datat
 ```
 
 ## Age and sex distribution
-
 ```{r}
 md |> 
   distinct(Sample, group, Gender, Age) |> 
-  ggplot(aes(x = Age, fill = Gender)) +
-  geom_histogram(
-    position = "dodge",
-    bins = 15
-  ) +
-  facet_wrap(~ group, nrow = 1, scales = "free") +
+  ggplot(aes(x = factor(Age), fill = Gender)) +
+  geom_bar(position = "dodge") +
+  facet_wrap(~ group, nrow = 1, scales = "free_x") +
   theme_bw() +
   labs(
     x = "Mouse Age",
@@ -109,15 +105,16 @@ df_sccomp |> DT::datatable(filter = "top")
 # Composition modeling
 
 We fitted a compositional model that estimates how cluster proportions change with genotype while adjusting for phenotypic covariates.\
+From discussion, we would typically assume that adult genetically inbred mice within ~1mo of age of each other would be similar enough. For gender, we don’t have a particular reason to assume there will be gender effects for these parameters (there might be! we just don’t know there are).\
 Model:
 
-#  $$ \sim genotype + age + gender$$
+#  $$ \sim genotype$$
 
 
 ```{r}
 res_comp <- sccomp_estimate(
   .data = df_sccomp,
-  formula_composition = ~ group + Age + Gender,
+  formula_composition = ~ group,
   .sample = Sample,
   .cell_group = cell_group,
   .count = cell_count,
