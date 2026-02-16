@@ -71,6 +71,7 @@ integrated_samples |> dplyr::count(Sample, group) |> arrange(group) |> DT::datat
 ```
 
 ## Age and sex distribution
+
 ```{r}
 md |> 
   distinct(Sample, group, Gender, Age) |> 
@@ -104,12 +105,12 @@ df_sccomp |> DT::datatable(filter = "top")
 
 # Composition modeling
 
-We fitted a compositional model that estimates how cluster proportions change with genotype while adjusting for phenotypic covariates.\
-From discussion, we would typically assume that adult genetically inbred mice within ~1mo of age of each other would be similar enough. For gender, we don’t have a particular reason to assume there will be gender effects for these parameters (there might be! we just don’t know there are).\
-Model:
+We fitted compositional models that estimates how cluster proportions change with genotype while adjusting for phenotypic covariates.\
+From discussion, we would typically assume that adult genetically inbred mice within \~1mo of age of each other would be similar enough. For gender, we don’t have a particular reason to assume there will be gender effects for these parameters (there might be! we just don’t know there are). To assess whether gender has an effect, we fitted two models: Model A included genotype only, whereas Model B included gender only.
 
-#  $$ \sim genotype$$
+## Model A:
 
+# $$ \sim genotype$$
 
 ```{r}
 res_comp <- sccomp_estimate(
@@ -131,9 +132,11 @@ p <- res_comp |>
 ```
 
 ## Visualisation and summary plot
-Black boxplots show observed within-sample proportions; blue boxplots show posterior predictive distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.  
 
-For example, in the AIRE population, WT shows the lowest within-sample proportion and is used as the baseline for comparison. The AIRE proportion is higher in BXBN than in WT, with the transparent box indicating that the difference from WT is not statistically significant. As a comparison, the AIRE proportion is higher in BU than in WT, and this difference is statistically significant. In both BXBN and BU genotypes, the blue posterior predictive boxplots closely overlap the black observed boxplots, indicating that the model adequately captures the observed and predicted distributions for the AIRE population. 
+Black boxplots show observed within-sample proportions; blue boxplots show posterior predictive distributions from the fitted model. If the model is descriptively adequate for the data, the blue boxplots should roughly overlay the black boxplots, which represent the observed data. The highlighted color means that whether genotype BXBN, and/or BU are significantly different from WT, while transparent box means that there is no significance from WT.
+
+For example, in the AIRE population, WT shows the lowest within-sample proportion and is used as the baseline for comparison. The AIRE proportion is higher in BXBN than in WT, with the transparent box indicating that the difference from WT is not statistically significant. As a comparison, the AIRE proportion is higher in BU than in WT, and this difference is statistically significant. In both BXBN and BU genotypes, the blue posterior predictive boxplots closely overlap the black observed boxplots, indicating that the model adequately captures the observed and predicted distributions for the AIRE population.
+
 ```{r fig.width=10, fig.height=8}
 p
 ```
@@ -143,6 +146,34 @@ When credible interval is great than 0, cluster is estimated to be more abundant
 ```{r fig.width=10, fig.height=8}
 res_comp |> 
   plot_1D_intervals()
+```
+
+## Model B:
+
+# $$ \sim gender$$
+
+```{r}
+res_comp_gender <- sccomp_estimate(
+  .data = df_sccomp,
+  formula_composition = ~ Gender,
+  .sample = Sample,
+  .cell_group = cell_group,
+  .count = cell_count,
+  verbose = F
+) |> 
+  
+  # identify outliers probabilistically based on the model fit, and exlcude them from the estimation
+  sccomp_remove_outliers(cores = 1, verbose = FALSE, max_sampling_iterations = 2000) |> 
+  sccomp_test()
+
+p <- res_comp_gender |>
+  sccomp_boxplot(factor = "Gender",
+                 remove_unwanted_effects = TRUE)
+
+```
+
+```{r fig.width=10, fig.height=8}
+p
 ```
 
 ::: {.callout-note collapse="true"}
