@@ -1238,7 +1238,7 @@ integrated_samples<- integrated_samples |>
   dplyr::left_join(marker_cell_type_tbl, by = c("combined_cluster_merged" = "cluster"), copy=T)|>  
   mutate(cell_type = ifelse(is.na(cell_type), combined_cluster_merged, cell_type))
 integrated_samples$cell_type <- as.factor(integrated_samples$cell_type)
-
+# integrated_samples |> saveRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se.rds") 
 p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors ) 
 
 coords <- p$data |>
