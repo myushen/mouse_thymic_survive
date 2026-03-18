@@ -209,29 +209,23 @@ Since sex is not considered as a parameter, and gender is not significant in BXB
 ## Load gene names
 ```{r}
 genes_tbl <- readxl::read_xlsx("/vast/projects/thymic_survive/mimetic TEC RNA-seq apoptotic pathways(Sheet1).xlsx", sheet = 2) |> 
-  mutate(`Gene name` = stringr::str_trim(`Gene name`))
-name_fixes <- c(
-  "APAF-1"      = "Apaf1",   # hyphen removed in mouse symbol
-  "RIP1"        = "Ripk1"   # mouse/official symbol is Ripk1
-)
-gene_names_mouse <- stringr::str_to_title(gene_names_original)
-idx <- gene_names_original %in% names(name_fixes)
-gene_names_mouse[idx] <- unname(name_fixes[gene_names_original[idx]])
+  mutate(Gene_name = stringr::str_trim(Gene_name)) |>
+  mutate(Gene_name = case_when(
+    Gene_name == "APAF-1"  ~ "Apaf1",
+    Gene_name == "RIP1"   ~ "Ripk1",
+    TRUE ~ Gene_name
+  )) |> 
+  mutate(Gene_name = stringr::str_to_title(Gene_name))
 
 map <- AnnotationDbi::mapIds(
       EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
-      keys = gene_names_mouse,
+      keys = genes_tbl$Gene_name,
       column = "GENEID",
       keytype = "SYMBOL",
       multiVals = "first"
     ) |>
-  setNames(gene_names_original) |>
   enframe("Gene name", "ensemble ID") |>
-  mutate(`ensemble ID` = case_when(
-    `Gene name` == "AIFM1"  ~ "ENSMUSG00000036932",
-    `Gene name` == "PMAIP1" ~ "ENSG00000141682",
-    .default = `ensemble ID`
-  )) 
+  mutate(exist_in_object = ifelse(`ensemble ID` %in% rownames(integrated_samples), TRUE, FALSE))
 DT::datatable(map, filter = "top")
 ```
 
@@ -257,44 +251,45 @@ logcpm_pb <- edgeR::cpm(counts_pb, log = TRUE, prior.count = 1)
 
 # Compare the transcriptional level of a given apoptotic protein across mimetic populations within the same group (e.g., WT).
 ```{r}
-# make_expr_plot <- function(gene_id, gene_label) {
-#   expr_tbl <- pb |>
-#     colData() |>
-#     as.data.frame() |>
-#     transmute(
-#       Sample,
-#       group,
-#       cell_type,
-#       logCPM = as.numeric(logcpm_pb[gene_id, ])
-#     ) |>
-#     filter(group == "WT") |>
-#     mutate(cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE))
-# 
-#   ggplot(expr_tbl, aes(x = cell_type, y = logCPM)) +
-#     geom_boxplot(outlier.shape = NA, width = 0.6) +
-#     geom_point(
-#       aes(color = Sample, group = Sample),
-#       position = position_dodge(width = 0.55),
-#       size = 2,
-#       alpha = 0.9
-#     ) +
-#     theme_bw() +
-#     theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-#     labs(
-#       title = paste0(gene_label, " (", gene_id, ") — WT"),
-#       x = "Cell types",
-#       y = "logCPM (pseudobulk)"
-#     )
-# }
+make_expr_plot <- function(gene_id, gene_label) {
+  expr_tbl <- pb |>
+    colData() |>
+    as.data.frame() |>
+    transmute(
+      Sample,
+      group,
+      cell_type,
+      logCPM = as.numeric(logcpm_pb[gene_id, ])
+    ) |>
+    filter(group == "WT") |>
+    mutate(cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE))
+
+  ggplot(expr_tbl, aes(x = cell_type, y = logCPM)) +
+    geom_boxplot(outlier.shape = NA, width = 0.6) +
+    geom_point(
+      aes(color = Sample, group = Sample),
+      position = position_dodge(width = 0.55),
+      size = 2,
+      alpha = 0.9
+    ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = paste0(gene_label, " (", gene_id, ") — WT"),
+      x = "Cell types",
+      y = "logCPM (pseudobulk)"
+    )
+}
 ```
 
 ```{r}
 # Valid genes present in the expression matrix, with apoptosis type from genes_tbl
 map <- map |>
   filter(!is.na(`ensemble ID`), `ensemble ID` %in% rownames(logcpm_pb)) |>
+  select(-exist_in_object) |>
   left_join(
-    genes_tbl |> transmute(`Gene name` = stringr::str_trim(`Gene name`), apoptosis_type = `apoptosis  type`),
-    by = "Gene name"
+    genes_tbl |> select(-name),
+    by = c("Gene name" = "Gene_name")
   ) |> distinct()
 
 # Sample metadata
@@ -375,7 +370,7 @@ expr_long |>
     legend.position = "bottom"
   ) +
   labs(
-    title = "Intrinsic Apoptotic gene expression across mimetic populations (WT)",
+    title = "Extrinsic Apoptotic gene expression across mimetic populations (WT)",
     x     = "Cell type",
     y     = "logCPM (pseudobulk)"
   )
@@ -406,7 +401,7 @@ expr_long |>
     legend.position = "bottom"
   ) +
   labs(
-    title = "Intrinsic Apoptotic gene expression across mimetic populations (WT)",
+    title = "Non-canonical NF-kB Apoptotic gene expression across mimetic populations (WT)",
     x     = "Cell type",
     y     = "logCPM (pseudobulk)"
   )
@@ -416,7 +411,7 @@ expr_long |>
 
 # Compare the transcriptional level of a given apoptotic protein across groups within the same mimetic population (e.g., BclxL expression in WT vs BclxL KO vs BAX/BAK KO in tuft (1) cells).
 ## Intrinsic
-```{r fig.width=8, fig.height=6}
+```{r fig.width=10, fig.height=6}
 expr_long |>
   filter(apoptosis_type == "Intrinsic", cell_type == "Tuft1") |>
   mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
@@ -442,7 +437,7 @@ expr_long |>
   )
 ```
 ## Extrinsic
-```{r fig.width=8, fig.height=6}
+```{r fig.width=10, fig.height=6}
 expr_long |>
   filter(apoptosis_type == "Extrinsic", cell_type == "Tuft1") |>
   mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
@@ -469,7 +464,7 @@ expr_long |>
 ```
 
 ## Non-canonical NF-kB
-```{r fig.width=8, fig.height=6}
+```{r fig.width=10, fig.height=6}
 expr_long |>
   filter(apoptosis_type == "Non-canonical NF-kB", cell_type == "Tuft1") |>
   mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
