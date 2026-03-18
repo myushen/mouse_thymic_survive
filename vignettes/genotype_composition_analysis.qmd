@@ -11,6 +11,7 @@ format:
     code-fold-default: true
     toc: true
     toc-location: right 
+    page-layout: full
 knitr:
   opts_chunk:
     message: false
@@ -25,8 +26,8 @@ editor: source
 
 This report builds on the mouse thymic project, following quality control report (mouse_thymic_quality_report-2026-01-22.html) and the agreed cell type clusters.
 
--   Aim: Test whether the composition of TEC clusters differs across genotypes.\
--   Genotypes:
+-   Aim: Test whether the composition of TEC clusters differs across genotypes, and characterise transcriptional differences in apoptotic pathways across mimetic populations. This is addressed through compositional modelling (sccomp), pseudobulk gene expression boxplots stratified by genotype and cell type, and summary heatmaps.\
+-   Genotypes and hypotheses:
     -   WT: baseline.
     -   BXBN knockout: apoptosis blocked (expected increase in mimetic cells)\
     -   BU knockout: pro-survival lost (expected decrease in mimetic cells)
@@ -249,35 +250,72 @@ logcpm_pb <- edgeR::cpm(counts_pb, log = TRUE, prior.count = 1)
 ```
 
 
-# Compare the transcriptional level of a given apoptotic protein across mimetic populations within the same group (e.g., WT).
-```{r}
-make_expr_plot <- function(gene_id, gene_label) {
-  expr_tbl <- pb |>
-    colData() |>
-    as.data.frame() |>
-    transmute(
-      Sample,
-      group,
-      cell_type,
-      logCPM = as.numeric(logcpm_pb[gene_id, ])
-    ) |>
-    filter(group == "WT") |>
-    mutate(cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE))
+# Quantifying apoptotic gene expression across mimetic populations within each genotype
 
-  ggplot(expr_tbl, aes(x = cell_type, y = logCPM)) +
+This section compares the transcriptional level of a given apoptotic protein across mimetic populations within the same group (e.g., WT).
+```{r}
+plot_expr_across_celltypes <- function(expr_long, apotype, grp) {
+  expr_long |>
+    filter(group == grp, apoptosis_type == apotype) |>
+    mutate(
+      cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE),
+      gene_name = forcats::fct_reorder(gene_name, logCPM, .fun = median, na.rm = TRUE)
+    ) |>
+    ggplot(aes(x = cell_type, y = logCPM)) +
     geom_boxplot(outlier.shape = NA, width = 0.6) +
     geom_point(
       aes(color = Sample, group = Sample),
       position = position_dodge(width = 0.55),
-      size = 2,
-      alpha = 0.9
+      size = 1.5,
+      alpha = 0.8
     ) +
-    theme_bw() +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    facet_wrap(~ gene_name, scales = "free_y") +
+    theme_bw(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 20),
+      axis.title.x = element_text(size = 15),
+      axis.text.x  = element_text(angle = 45, hjust = 1, size = 15),
+      axis.title.y = element_text(size = 15),
+      strip.text   = element_text(face = "bold", size = 15),
+      legend.position = "bottom",
+      legend.title = element_text(size = 14),  
+      legend.text  = element_text(size = 12)   
+    ) +
     labs(
-      title = paste0(gene_label, " (", gene_id, ") — WT"),
-      x = "Cell types",
-      y = "logCPM (pseudobulk)"
+      title = paste0(apotype, " Apoptotic gene expression across mimetic populations (", grp, ")"),
+      x     = "Cell type",
+      y     = "logCPM (pseudobulk)"
+    )
+}
+
+plot_expr_across_groups <- function(expr_long, apotype, ct) {
+  expr_long |>
+    filter(apoptosis_type == apotype, cell_type == ct) |>
+    mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
+    ggplot(aes(x = group, y = logCPM, color = group)) +
+    geom_boxplot(outlier.shape = NA, width = 0.6) +
+    geom_point(
+      position = position_dodge(width = 0.55),
+      size = 1.5,
+      alpha = 0.8
+    ) +
+    facet_grid(~gene_name, scales = "free_x") +
+    theme_bw(base_size = 9) +
+    theme(
+      plot.title = element_text(size = 15),
+      axis.title.x = element_text(size = 10),
+      axis.text.x  = element_text(angle = 45, hjust = 1, size = 10),
+      axis.title.y = element_text(size = 15),
+      strip.text   = element_text(face = "bold", size = 8),
+      legend.position = "bottom",
+      legend.title = element_text(size = 12),  
+      legend.text  = element_text(size = 10)   
+    ) +
+    labs(
+      title = paste0(apotype, " — expression across genotypes in ", ct, " population"),
+      x     = "Genotype",
+      y     = "logCPM (pseudobulk)",
+      color = "Genotype"
     )
 }
 ```
@@ -310,184 +348,133 @@ expr_long <- map |>
       )
   })
 
-DT::datatable(expr_long |> 
-                filter(group == "WT"), 
-              filter = "top")
+DT::datatable(expr_long, filter = "top")
 ```
 
 ## Intrinsic
-```{r fig.width=15, fig.height=12}
-expr_long |>
-  filter(group == "WT", apoptosis_type == "Intrinsic") |>
-  mutate(
-    cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE),
-    gene_name = forcats::fct_reorder(gene_name, logCPM, .fun = median, na.rm = TRUE)
-  ) |>
-  ggplot(aes(x = cell_type, y = logCPM)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    aes(color = Sample, group = Sample),
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_wrap(~ gene_name, scales = "free_y") +
-  theme_bw(base_size = 10) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold"),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Intrinsic Apoptotic gene expression across mimetic populations (WT)",
-    x     = "Cell type",
-    y     = "logCPM (pseudobulk)"
-  )
 
+```{r results='asis', fig.width=20, fig.height=20}
+groups <- c("WT", "BXBN", "BU")
+cat("::: {.panel-tabset}\n\n")
+for (grp in groups) {
+  cat(paste0("### ", grp, "\n\n"))
+  print(plot_expr_across_celltypes(expr_long, "Intrinsic", grp))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
 
 ## Extrinsic
-```{r fig.width=15, fig.height=12}
-expr_long |>
-  filter(group == "WT", apoptosis_type == "Extrinsic") |>
-  mutate(
-    cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE),
-    gene_name = forcats::fct_reorder(gene_name, logCPM, .fun = median, na.rm = TRUE)
-  ) |>
-  ggplot(aes(x = cell_type, y = logCPM)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    aes(color = Sample, group = Sample),
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_wrap(~ gene_name, scales = "free_y") +
-  theme_bw(base_size = 10) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold"),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Extrinsic Apoptotic gene expression across mimetic populations (WT)",
-    x     = "Cell type",
-    y     = "logCPM (pseudobulk)"
-  )
 
+```{r results='asis', fig.width=15, fig.height=12}
+groups <- c("WT", "BXBN", "BU")
+cat("::: {.panel-tabset}\n\n")
+for (grp in groups) {
+  cat(paste0("### ", grp, "\n\n"))
+  print(plot_expr_across_celltypes(expr_long, "Extrinsic", grp))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
 
 ## Non-canonical NF-kB
-```{r fig.width=15, fig.height=12}
-expr_long |>
-  filter(group == "WT", apoptosis_type == "Non-canonical NF-kB") |>
-  mutate(
-    cell_type = forcats::fct_reorder(cell_type, logCPM, .fun = median, na.rm = TRUE),
-    gene_name = forcats::fct_reorder(gene_name, logCPM, .fun = median, na.rm = TRUE)
-  ) |>
-  ggplot(aes(x = cell_type, y = logCPM)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    aes(color = Sample, group = Sample),
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_wrap(~ gene_name, scales = "free_y") +
-  theme_bw(base_size = 10) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold"),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Non-canonical NF-kB Apoptotic gene expression across mimetic populations (WT)",
-    x     = "Cell type",
-    y     = "logCPM (pseudobulk)"
-  )
 
+```{r results='asis', fig.width=15, fig.height=12}
+groups <- c("WT", "BXBN", "BU")
+cat("::: {.panel-tabset}\n\n")
+for (grp in groups) {
+  cat(paste0("### ", grp, "\n\n"))
+  print(plot_expr_across_celltypes(expr_long, "Non-canonical NF-kB", grp))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
 
 
-# Compare the transcriptional level of a given apoptotic protein across groups within the same mimetic population (e.g., BclxL expression in WT vs BclxL KO vs BAX/BAK KO in tuft (1) cells).
+# Quantifying apoptotic gene expression across genotypes within each mimetic population
+
+This section compares the transcriptional level of a given apoptotic protein across groups within the same mimetic population (e.g., BclxL expression in WT vs BclxL KO vs BAX/BAK KO in tuft (1) cells).
+
 ## Intrinsic
-```{r fig.width=10, fig.height=6}
-expr_long |>
-  filter(apoptosis_type == "Intrinsic", cell_type == "Tuft1") |>
-  mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
-  ggplot(aes(x = group, y = logCPM, color = group)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_grid(~gene_name, scales = "free_x") +
-  theme_bw(base_size = 9) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold", size = 7),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Intrinsic — expression across genotypes in Tuft 1 population",
-    x     = "Genotype",
-    y     = "logCPM (pseudobulk)",
-    color = "Genotype"
-  )
+
+```{r results='asis', fig.width=10, fig.height=6}
+cell_types <- sort(unique(expr_long$cell_type))
+cat("::: {.panel-tabset}\n\n")
+for (ct in cell_types) {
+  cat(paste0("### ", ct, "\n\n"))
+  print(plot_expr_across_groups(expr_long, "Intrinsic", ct))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
+
 ## Extrinsic
-```{r fig.width=10, fig.height=6}
-expr_long |>
-  filter(apoptosis_type == "Extrinsic", cell_type == "Tuft1") |>
-  mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
-  ggplot(aes(x = group, y = logCPM, color = group)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_grid(~gene_name, scales = "free_x") +
-  theme_bw(base_size = 9) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold", size = 7),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Extrinsic — expression across genotypes in Tuft 1 population",
-    x     = "Genotype",
-    y     = "logCPM (pseudobulk)",
-    color = "Genotype"
-  )
+
+```{r results='asis', fig.width=10, fig.height=6}
+cell_types <- sort(unique(expr_long$cell_type))
+cat("::: {.panel-tabset}\n\n")
+for (ct in cell_types) {
+  cat(paste0("### ", ct, "\n\n"))
+  print(plot_expr_across_groups(expr_long, "Extrinsic", ct))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
 
 ## Non-canonical NF-kB
-```{r fig.width=10, fig.height=6}
-expr_long |>
-  filter(apoptosis_type == "Non-canonical NF-kB", cell_type == "Tuft1") |>
-  mutate(group = forcats::fct_relevel(group, "WT", "BXBN", "BU")) |>
-  ggplot(aes(x = group, y = logCPM, color = group)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6) +
-  geom_point(
-    position = position_dodge(width = 0.55),
-    size = 1.5,
-    alpha = 0.8
-  ) +
-  facet_grid(~gene_name, scales = "free_x") +
-  theme_bw(base_size = 9) +
-  theme(
-    axis.text.x  = element_text(angle = 45, hjust = 1),
-    strip.text   = element_text(face = "bold", size = 7),
-    legend.position = "bottom"
-  ) +
-  labs(
-    title = "Non-canonical NF-kB — expression across genotypes in Tuft 1 population",
-    x     = "Genotype",
-    y     = "logCPM (pseudobulk)",
-    color = "Genotype"
-  )
+
+```{r results='asis', fig.width=10, fig.height=6}
+cell_types <- sort(unique(expr_long$cell_type))
+cat("::: {.panel-tabset}\n\n")
+for (ct in cell_types) {
+  cat(paste0("### ", ct, "\n\n"))
+  print(plot_expr_across_groups(expr_long, "Non-canonical NF-kB", ct))
+  cat("\n\n")
+}
+cat(":::\n\n")
+```
+
+# Heatmap of apoptotic gene expression across mimetic populations
+
+Mean logCPM per cell type × gene is shown, with genes grouped by apoptosis pathway on the Y axis. Each tab shows one genotype.
+
+```{r}
+plot_expr_heatmap <- function(expr_long, grp) {
+  expr_long |>
+    filter(group == grp) |>
+    group_by(cell_type, gene_name, apoptosis_type) |>
+    summarise(mean_logCPM = mean(logCPM, na.rm = TRUE), .groups = "drop") |>
+    mutate(
+      cell_type = forcats::fct_reorder(cell_type, mean_logCPM, .fun = mean, na.rm = TRUE),
+      gene_name = forcats::fct_reorder(gene_name, mean_logCPM, .fun = mean, na.rm = TRUE)
+    ) |>
+    ggplot(aes(x = cell_type, y = gene_name, fill = mean_logCPM)) +
+    geom_tile(color = "white", linewidth = 0.3) +
+    facet_grid(apoptosis_type ~ ., scales = "free_y", space = "free_y") +
+    scale_fill_viridis_c(option = "magma", name = "mean\nlogCPM") +
+    theme_bw(base_size = 10) +
+    theme(
+      axis.text.x  = element_text(angle = 45, hjust = 1),
+      strip.text.y = element_text(face = "bold", angle = 0),
+      panel.spacing = unit(0.3, "lines")
+    ) +
+    labs(
+      title = paste0("Apoptotic gene expression across mimetic populations (", grp, ")"),
+      x = "Cell type",
+      y = "Gene"
+    )
+}
+```
+
+```{r results='asis', fig.width=10, fig.height=8}
+groups <- c("WT", "BXBN", "BU")
+cat("::: {.panel-tabset}\n\n")
+for (grp in groups) {
+  cat(paste0("### ", grp, "\n\n"))
+  print(plot_expr_heatmap(expr_long, grp))
+  cat("\n\n")
+}
+cat(":::\n\n")
 ```
 
 ::: {.callout-note collapse="true"}
