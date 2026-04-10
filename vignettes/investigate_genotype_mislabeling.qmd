@@ -1,0 +1,153 @@
+---
+title: "Investigating potentially misgenotyped samples"
+author: "Mengyuan Shen"
+format:
+  html:
+    theme: minty
+    df-print: paged
+    code-line-numbers: true
+    embed-resources: true
+    code-fold: true
+    code-fold-default: true
+    toc: true
+    toc-location: right 
+    page-layout: full
+knitr:
+  opts_chunk:
+    message: false
+    warning: false
+comments:
+  hypothesis:
+    theme: clean
+editor: source
+---
+
+```{r}
+library(purrr)
+library(dplyr)
+library(stringr)
+library(Seurat)
+library(tibble)
+library(tidyseurat)
+source("/vast/projects/thymic_survive/results/utils.R")
+integrated_samples <-  readRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se.rds") 
+integrated_samples = integrated_samples |> mutate(group = ifelse(group == "BU?", "WT", group)) # BU?56 is BCLXL wild type
+```
+
+# Description
+Here use Bcl2l1 expression as an example. Samples BU.48 and BU.50 showed a dim genotyping band and detectable BCLXL RNA, raising the possibility that they are WT mice mislabelled as BCLXL KO (BU). In a complete BCLXL KO, the Bcl2l1 transcript is absent or substantially reduced, so most cells expression near zero. The two plots below compare Bcl2l1 expression across all samples in the raw RNA counts and SCT-normalised counts — if BU.48 / BU.50 cluster with WT rather than with the other BU samples, that is strong evidence of misgenotyping.
+
+```{r}
+suspect_samples <- c("BU.48", "BU.50")
+obj <- integrated_samples
+
+# Save and restore default assay to avoid side-effects
+orig_assay <- DefaultAssay(obj)
+obj[["RNA"]] <- JoinLayers(obj[["RNA"]])
+
+DefaultAssay(obj) <- "RNA"
+rna_df <- FetchData(obj, vars = c("ENSMUSG00000007659", "Sample", "group")) |>
+  tibble::rownames_to_column("cell") |>
+  dplyr::rename(Bcl2l1_expression = ENSMUSG00000007659) |>
+  mutate(assay = "RNA (raw counts)")
+
+DefaultAssay(obj) <- "SCT"
+sct_df <- FetchData(obj, vars = c("ENSMUSG00000007659", "Sample", "group")) |>
+  tibble::rownames_to_column("cell") |>
+  dplyr::rename(Bcl2l1_expression = ENSMUSG00000007659) |>
+  mutate(assay = "SCT (normalised counts)")
+
+DefaultAssay(obj) <- orig_assay
+
+bcl2l1_cells <- dplyr::bind_rows(rna_df, sct_df) |>
+  mutate(
+    group   = factor(group, levels = c("WT", "BXBN", "BU")),
+    suspect = Sample %in% suspect_samples,
+    assay   = factor(assay, levels = c("RNA (raw counts)", "SCT (normalised counts)"))
+  )
+
+
+```
+
+## Fraction of cells expressing Bcl2l1 per sample
+
+scRNA-seq data is inherently sparse — most cells score zero. Visualise fraction of cells with at least one detected Bcl2l1 count. In a true KO this fraction should be near zero across all cells; in WT it will be small. Use raw counts, mean Bcl2l1 expressed.
+
+```{r fig.width=9, fig.height=6}
+raw_counts_bcl <- GetAssayData(obj, assay = "RNA", layer = "counts")["ENSMUSG00000007659", ]
+
+pct_expr <- integrated_samples[[]] |>
+  tibble::rownames_to_column("cell") |>
+  select(cell, Sample, group) |>
+  mutate(
+    group     = factor(group, levels = c("WT", "BXBN", "BU")),
+    expressed = raw_counts_bcl[cell] > 0
+  ) |>
+  group_by(Sample, group) |>
+  summarise(
+    pct_expressing = mean(expressed) * 100,
+    n_cells        = n(),
+    .groups        = "drop"
+  ) |>
+  mutate(suspect = Sample %in% suspect_samples)
+
+ggplot(pct_expr, aes(x = group, y = pct_expressing, colour = group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.45, colour = "grey40") +
+  geom_point(
+    aes(shape = suspect, size = suspect),
+    position = position_jitter(width = 0.1, seed = 42),
+    alpha = 0.9
+  ) +
+  ggrepel::geom_text_repel(
+    data = \(d) filter(d, !suspect),
+    aes(label = Sample),
+    colour = "grey35", size = 3.2,
+    min.segment.length = 0
+  ) +
+  ggrepel::geom_text_repel(
+    data     = \(d) filter(d, suspect),
+    aes(label = Sample),
+    colour   = "red2", size = 3.5, fontface = "bold",
+    min.segment.length = 0
+  ) +
+  scale_colour_manual(values = c("WT" = "#4575b4", "BXBN" = "#e08020", "BU" = "#d73027")) +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 8),   guide = "none") +
+  scale_size_manual( values = c("FALSE" = 2,  "TRUE" = 3.5), guide = "none") +
+  theme_bw(base_size = 12) +
+  labs(
+    title    = "Percentage of cells with detected raw Bcl2l1 counts per sample",
+    subtitle = "Suspect samples labelled in red; true KOs should be small",
+    x        = "Genotype",
+    y        = "% cells with Bcl2l1 count > 0",
+    colour   = "Genotype"
+  )
+```
+
+```{r fig.width=15, fig.height=8}
+bcl2l1_cells |>
+  mutate(Sample = forcats::fct_reorder(Sample, as.integer(group))) |>
+  ggplot(aes(x = Sample, y = Bcl2l1_expression, fill = group)) +
+  geom_violin(aes(colour = suspect), scale = "width", trim = TRUE, linewidth = 0.8) +
+  geom_boxplot(width = 0.06, outlier.shape = NA, fill = "white", alpha = 0.5) +
+  scale_fill_manual(values = c("WT" = "#4575b4", "BXBN" = "#e08020", "BU" = "#d73027")) +
+  scale_colour_manual(
+    values = c("FALSE" = "grey30", "TRUE" = "red2"),
+    labels = c("FALSE" = "Other", "TRUE" = "BU.48 / BU.50 (suspect)"),
+    name   = NULL
+  ) +
+  facet_grid(assay ~ group, scales = "free", space = "free_x") +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 8),
+    strip.text   = element_text(face = "bold"),
+    strip.text.y = element_text(angle = 0),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title    = "Bcl2l1 (BCLXL) expression per sample — RNA vs SCT assay",
+    subtitle = "Red outline = BU.48 / BU.50 (suspect); each violin spans all cells in that sample",
+    x        = "Sample",
+    y        = "Expression",
+    fill     = "Genotype"
+  )
+```
