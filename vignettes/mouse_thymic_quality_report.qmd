@@ -40,9 +40,10 @@ library(clustree)
 library(readxl)
 library(tibble)
 library(ggrepel)
-source("/vast/projects/thymic_survive/results/utils.R")
+source("/home/users/allstaff/shen.m/git_control/mouse_thymic_survive/dev/utils.R")
 options(future.globals.maxSize = 8000 * 1024^3)
 samples = list.files("/vast/projects/thymic_survive/results", full.names = T, pattern = "_seurat.rds")
+samples = samples[!grepl("BU\\.48|BU\\.50", samples)] 
 target_store = "/vast/projects/thymic_survive/hpcell_qc_target_store"
 ```
 
@@ -88,7 +89,7 @@ samples |>
         
       ),
       verbosity = "summary",
-      update = "always", 
+      update = "never", 
       error = "continue",
       garbage_collection = 100, 
       workspace_on_error = TRUE
@@ -274,6 +275,7 @@ map(se_filtered_list, ~ {
 ```
 
 # Sample integration
+Sample integration was performed excluding BU.48 and BU.50 samples for technical reasons.
 ```{r eval=FALSE, echo=FALSE}
 tar_script({
   library(scater)
@@ -334,6 +336,7 @@ tar_script({
   integrate_samples <- function(normalised_seurat_list, npcs = 30, dims = 30, 
                                 batch_var = "sample", saved_directory) {
     
+    set.seed(99567)
     #  Get union of variable features across all SCT-normalised objects
     features <- unique(unlist(lapply(normalised_seurat_list, VariableFeatures)))
     
@@ -347,7 +350,7 @@ tar_script({
       harmony::RunHarmony(group.by.vars = batch_var, verbose=T) |>
       RunUMAP(reduction = "harmony",  dims = 1:dims, verbose=T)
     
-    merged |> saveRDS(file.path(saved_directory, "samples_sct_integrated_v1_0_0.rds"))
+    merged |> saveRDS(file.path(saved_directory, "samples_sct_integrated_v1_0_1.rds"))
     
     print("File saved successfully ..")
   }
@@ -357,7 +360,7 @@ tar_script({
       filename,
       {
         files <- list.files("/vast/projects/thymic_survive/results/filtered/", full.names = T, pattern = "_seurat.rds")
-        files <- files[ !grepl("multiplet|negative", files) ]
+        files <- files[ !grepl("multiplet|negative|BU.48|BU.50", files) ]
         files
       }
      
@@ -384,11 +387,13 @@ tar_script({
     )
   
 
-)}, script = "/vast/projects/thymic_survive/sample_integration_target_script.R", ask = FALSE)
+)}, 
+# Excluded samples BU.48 and BU.50 -> v1_0_1
+script = "/vast/projects/thymic_survive/sample_integration_target_script_v1_0_1.R", ask = FALSE)
 
 tar_make(
-    script = "/vast/projects/thymic_survive/sample_integration_target_script.R",
-    store = "/vast/projects/thymic_survive/sample_integration_target_store", 
+    script = "/vast/projects/thymic_survive/sample_integration_target_script_v1_0_1.R",
+    store = "/vast/projects/thymic_survive/sample_integration_target_store_v1_0_1", 
     reporter = "summary"  )
 
 ```
@@ -397,7 +402,7 @@ tar_make(
 # Visualise integrated samples
 After integration, we computed a shared nearest-neighbour (SNN) graph using the Harmony-corrected principal components (PCs 1–30) to capture the underlying structure of the combined dataset. We then applied graph-based clustering across a range of resolution values (0.2–1.0) to explore hierarchical structure and identify both broad cellular compartments and finer subpopulations.  
 ```{r}
-integrated_samples <- readRDS("/vast/projects/thymic_survive/results/filtered/samples_sct_integrated_v1_0_0.rds") 
+integrated_samples <- readRDS("/vast/projects/thymic_survive/results/filtered/samples_sct_integrated_v1_0_1.rds") 
 integrated_samples = integrated_samples |> 
   FindNeighbors(reduction = "harmony", dims = 1:30, k.param = 15, verbose = FALSE) |>
   FindClusters(resolution = c(0.2, 0.3,0.4, 0.5,0.6,0.8,1), verbose = FALSE)
@@ -537,7 +542,16 @@ map <- map |> mutate(`ensemble ID` = case_when(
 ))
 
 all_other_markers <- all_other_markers |> select(-row_id) |> left_join(map, by = "marker", copy = T, relationship = "many-to-many") |> distinct()
-DT::datatable(all_other_markers, filter = "top")
+DT::datatable(
+  all_other_markers,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    dom = 'Bfrtip',
+    buttons = c('csv', 'excel', 'pdf', 'print'),
+    lengthMenu = list(c(10, 25, 50, -1), c('10', '25', '50', 'All'))
+  )
+)
 ```
 
 
@@ -1132,20 +1146,20 @@ for (nm in names(plot_list_lung_at2)) {
 Ager is not found in the cluster 4
 
 
-# Cluster 7
-Cluster 7 separate into two population, one merge with population 6 (aire), one merge with population 0 (immature)
+# Cluster 6
+Cluster 6 separate into two population, one merge with population 5 (aire), one merge with population 0 (immature)
 ```{r}
-cl7 <- subset(integrated_samples,  SCT_snn_res.0.6 == "7")
-DefaultAssay(cl7) <- "RNA"
-cl7 <- JoinLayers(cl7, overwrite = TRUE)
-cl7[["SCT"]] <- NULL
-cl7 <- cl7 |>
-  SCTransform(new.assay.name = "SCT_cl7") |>
-  RunPCA(npcs = 30, verbose = FALSE) |> 
-  FindNeighbors(dims = 1:30, verbose = FALSE) |> 
-  RunUMAP(dims = 1:30, verbose = FALSE) |> 
+cl6 <- subset(integrated_samples,  SCT_snn_res.0.6 == "6")
+DefaultAssay(cl6) <- "RNA"
+cl6 <- JoinLayers(cl6, overwrite = TRUE)
+cl6[["SCT"]] <- NULL
+cl6 <- cl6 |>
+  SCTransform(new.assay.name = "SCT_cl6") |>
+  RunPCA(npcs = 30, verbose = FALSE) |>
+  FindNeighbors(dims = 1:30, verbose = FALSE) |>
+  RunUMAP(dims = 1:30, verbose = FALSE) |>
   FindClusters(resolution = seq(0.2, 0.6, 0.1), verbose = FALSE)
-DimPlot(cl7, group.by = "SCT_cl7_snn_res.0.2")
+DimPlot(cl6, group.by = "SCT_cl6_snn_res.0.2")
 ```
 
 
@@ -1183,8 +1197,8 @@ integrated_samples$combined_cluster <- as.character(integrated_samples$SCT_snn_r
 sub_cl4_named <- get_subclusters(cl4, "4_", "SCT_cl4_snn_res.0.2")
 integrated_samples$combined_cluster[names(sub_cl4_named)] <- sub_cl4_named
 
-sub_cl7_named <- get_subclusters(cl7, "7_", "SCT_cl7_snn_res.0.2")
-integrated_samples$combined_cluster[names(sub_cl7_named)] <- sub_cl7_named
+sub_cl6_named <- get_subclusters(cl6, "6_", "SCT_cl6_snn_res.0.2")
+integrated_samples$combined_cluster[names(sub_cl6_named)] <- sub_cl6_named
 
 sub_cl1_named <- get_subclusters(cl1, "1_", "SCT_cl1_snn_res.0.2")
 integrated_samples$combined_cluster[names(sub_cl1_named)] <- sub_cl1_named
@@ -1204,17 +1218,17 @@ integrated_samples$combined_cluster <- factor(
 
 merged <- as.character(integrated_samples$combined_cluster)
 
-# Step 1: Merge cluster 7 subclusters with clusters 6 and 0
-# 7_0 merges with cluster 6
-merged[merged == "7_0"] <- "6"
-# 7_1 merges with cluster 0
-merged[merged == "7_1"] <- "0"
+# Step 1: Merge cluster 6 subclusters with clusters 8 and 0
+# 6_0 merges with cluster 5
+merged[merged == "6_0"] <- "6"
+# 6_1 merges with cluster 0
+merged[merged == "6_1"] <- "0"
 
-# Step 2: Merge clusters 5, 6, and 7_0 (which is now "6")
+# Step 2: Merge clusters 5, 6_0, and 8 (which is now "6")
 # All become "5+6"
 merged[merged %in% c("5", "6")] <- "5+6"
 
-# Step 3: Merge clusters 0, 2, and 7_1 (which is now "0")
+# Step 3: Merge clusters 0, 2, and 6_1 (which is now "0")
 # All become "0+2"
 merged[merged %in% c("0", "2")] <- "0+2"
 

@@ -11,7 +11,8 @@ my_cols <- c(
   "8"  = "#8B4513",
   "9"  = "#2E8E90",
   "10" = "#20B2AA",
-  "11" = "#FF69B4"
+  "11" = "#FF69B4",
+  "12" = "#0d3b66"
 )
 
 # Color pallete for integrated samples after subclustering and recluster
@@ -44,8 +45,11 @@ my_cols_combined <- c(
   #"1_1" = "#FFA500",
   "1_2" = "black",
   "3"  = "#FF7F00",
+  #"5" = "#33A02C",
   "5+6"  = "#B15928",
-  "8"  = "#03fcb1",
+  "7"  = "#03fcb1",
+  #"8"  = "#03fcb1",
+  "8"  = "#7678ed",
   "9"  = "#2E8E90",
   "10" = "#cfcf11",
   "11" = "#FF69B4",
@@ -54,7 +58,7 @@ my_cols_combined <- c(
   "4_0" = "#b03374",  # deep violet
   "4_1" = "#00CED1",  # dark turquoise
   "4_2" = "#4B0082",   # crimson
-  "4_3" = "#7FFF00"   # chartreuse (very distinct),
+  "12" = "#7FFF00"
 )
 
 marker_cell_type_tbl <- tribble(
@@ -66,12 +70,14 @@ marker_cell_type_tbl <- tribble(
   "4_0", "Lung",
   "4_1", "Skin basal",
   "4_2", "Skin other",
-  "4_3", "Ionocytes",
   "5+6", "AIRE",
-  "8", "Microfold",
+  "7", "Microfold",
+  "8" , "TBD2",
+  #"8", "Microfold",
   "9", "Neuroendocrine",
   "10", "cTEC",
-  "11", "Ciliated"
+  "11", "Ciliated",
+  "12", "Ionocytes"
 )
 
 # cell_type_color_tbl <- c(
