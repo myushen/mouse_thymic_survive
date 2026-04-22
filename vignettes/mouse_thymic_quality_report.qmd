@@ -1180,7 +1180,7 @@ DimPlot(cl1, group.by = "SCT_cl1_snn_res.0.2")
 ```
 
 # Recluster
-```{r fig.width=10, fig.height=7}
+```{r}
 # Helper function to extract and name subclusters
 get_subclusters <- function(subset_obj, prefix, resolution_col) {
   sub_cl <- subset_obj[[resolution_col]][, 1]
@@ -1262,7 +1262,7 @@ coords <- p$data |>
     y = median(umap_2)
   )
 
-p +
+p_anno <- p +
   geom_text_repel(
     data = coords,
     aes(x = x, y = y, label = cell_type),
@@ -1272,9 +1272,17 @@ p +
     force = 2,                 # how strongly labels repel each other
     box.padding = 0.8,
     point.padding = 0.3,
-    nudge_y = 0.2
+    nudge_y = -0.2
   )
 
+```
+
+```{r fig.width=10, fig.height=7}
+p
+```
+
+```{r fig.width=10, fig.height=7}
+p_anno
 ```
 
 ::: {.callout-note collapse="true"}
