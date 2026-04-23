@@ -1252,7 +1252,7 @@ integrated_samples<- integrated_samples |>
   dplyr::left_join(marker_cell_type_tbl, by = c("combined_cluster_merged" = "cluster"), copy=T)|>  
   mutate(cell_type = ifelse(is.na(cell_type), combined_cluster_merged, cell_type))
 integrated_samples$cell_type <- as.factor(integrated_samples$cell_type)
-# integrated_samples |> saveRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se.rds") 
+# integrated_samples |> saveRDS("/vast/projects/thymic_survive/results/filtered/integrated_samples_final_clusters_se_v1_0_1.rds") 
 p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors ) 
 
 coords <- p$data |>
@@ -1283,6 +1283,88 @@ p
 
 ```{r fig.width=10, fig.height=7}
 p_anno
+```
+
+
+# UMAP for each genotype
+This section shows all the clusters for each of the genotype.
+```{r fig.width=8, fig.height=12}
+integrated_samples = integrated_samples |> mutate(group = ifelse(group == "BU?", "WT", group)) # BU?56 is BCLXL wild type
+
+md <- integrated_samples[[]] |>
+  tibble::rownames_to_column("cell") |>
+  mutate(genotype = factor(group, levels =  c("WT","BXBN","BU"))) |> 
+  dplyr::rename(cell_group = cell_type)
+
+p <- DimPlot(integrated_samples, group.by = "cell_type", order = T, cols = celltype_colors, split.by = "group", ncol=1 ) 
+
+coords <- p$data |>
+  group_by(cell_type) |>
+  summarise(
+    x = median(umap_1),
+    y = median(umap_2)
+  )
+
+p +
+  geom_text_repel(
+    data = coords,
+    aes(x = x, y = y, label = cell_type),
+    size = 3,
+    min.segment.length = 0,    # allow short or no lines
+    segment.color = "grey50",
+    force = 2,                 # how strongly labels repel each other
+    box.padding = 0.5,
+    point.padding = 0.3,
+    nudge_y = -0.2
+  )
+```
+
+
+Since BU cells are largely reduced after removing BU48 and BU50, thus subsample WT and BXBN to equalize UMAP per genotype.
+
+```{r fig.width=8, fig.height=12}
+meta <- integrated_samples@meta.data
+
+cells_BU    <- rownames(meta)[meta$group == "BU"]
+cells_WT    <- rownames(meta)[meta$group == "WT"]
+cells_BXBN  <- rownames(meta)[meta$group == "BXBN"]
+
+set.seed(123)
+
+n_target <- length(cells_BU)
+cells_WT_ds   <- sample(cells_WT,   size = n_target)
+cells_BXBN_ds <- sample(cells_BXBN, size = n_target)
+cells_to_plot <- c(cells_BU, cells_WT_ds, cells_BXBN_ds)
+
+sub <- integrated_samples[, cells_to_plot]
+p <- DimPlot(
+  sub,
+  group.by = "cell_type",
+  cols = celltype_colors,
+  split.by = "group",
+  ncol = 1,
+  cells = cells_to_plot 
+)
+
+coords <- p$data |>
+  group_by(cell_type) |>
+  summarise(
+    x = median(umap_1),
+    y = median(umap_2)
+  )
+
+p +
+  geom_text_repel(
+    data = coords,
+    aes(x = x, y = y, label = cell_type),
+    size = 3,
+    min.segment.length = 0,    # allow short or no lines
+    segment.color = "grey50",
+    force = 2,                 # how strongly labels repel each other
+    box.padding = 0.5,
+    point.padding = 0.3,
+    nudge_y = -0.2
+  )
 ```
 
 ::: {.callout-note collapse="true"}
