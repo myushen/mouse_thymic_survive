@@ -41,12 +41,12 @@ library(purrr)
 library(dplyr)
 library(stringr)
 library(Seurat)
-library(HPCell)
 library(scater) 
 library(clustree)
 library(readxl)
 library(tibble)
 library(ggrepel)
+library(tidyseurat)
 if (!requireNamespace("sccomp", quietly = TRUE)) {
   devtools::install_github("MangiolaLaboratory/sccomp")
 }
@@ -160,7 +160,8 @@ res_comp <- sccomp_estimate(
   .sample = Sample,
   .cell_group = cell_group,
   .count = cell_count,
-  verbose = F
+  verbose = F,
+  cache_stan_model = "/vast/scratch/users/shen.m"
 ) |> 
   
   # identify outliers probabilistically based on the model fit, and exlcude them from the estimation
@@ -200,7 +201,8 @@ res_comp_gender <- sccomp_estimate(
   .sample = Sample,
   .cell_group = cell_group,
   .count = cell_count,
-  verbose = F
+  verbose = FALSE,
+  cache_stan_model = "/vast/scratch/users/shen.m"
 ) |> 
   
   # identify outliers probabilistically based on the model fit, and exlcude them from the estimation
@@ -479,7 +481,7 @@ plot_expr_heatmap <- function(expr_long, grp) {
     ggplot(aes(x = cell_type, y = gene_name, fill = mean_logCPM)) +
     geom_tile(color = "white", linewidth = 0.3) +
     facet_grid(apoptosis_type ~ ., scales = "free_y", space = "free_y") +
-    scale_fill_viridis_c(option = "magma", name = "mean\nlogCPM") +
+    scale_fill_gradient(low = "#2166AC", high = "#FFFF00", name = "mean\nlogCPM") +
     theme_bw(base_size = 10) +
     theme(
       axis.text.x  = element_text(angle = 45, hjust = 1),
@@ -504,7 +506,7 @@ plot_expr_heatmap_combined <- function(expr_long) {
     ggplot(aes(x = group, y = gene_name, fill = mean_logCPM)) +
     geom_tile(color = "white", linewidth = 0.3) +
     facet_grid(apoptosis_type ~ cell_type, scales = "free_y", space = "free_y") +
-    scale_fill_viridis_c(option = "magma", name = "mean\nlogCPM") +
+    scale_fill_gradient(low = "#2166AC", high = "#FFFF00", name = "mean\nlogCPM") +
     theme_bw(base_size = 10) +
     theme(
       axis.text.x  = element_text(angle = 45, hjust = 1),
@@ -525,20 +527,37 @@ groups <- c("WT", "BXBN", "BU")
 cat("::: {.panel-tabset}\n\n")
 for (grp in groups) {
   cat(paste0("### ", grp, "\n\n"))
-  print(plot_expr_heatmap(expr_long, grp))
-  cat("\n\n")
+  p_grp <- plot_expr_heatmap(expr_long, grp)
+  print(p_grp)
+  fname <- paste0("heatmap_", grp, ".png")
+  ggsave(fname, plot = p_grp, width = 10, height = 8, dpi = 300, bg = "white")
+  cat(paste0(
+    '<a href="', fname, '" download="', fname, '" ',
+    'style="display:inline-block;margin:4px 0 8px;padding:4px 10px;',
+    'background:#2166AC;color:#fff;border-radius:4px;text-decoration:none;font-size:0.85em;">',
+    '\u2b07 Download high-res (', grp, ')</a>\n\n'
+  ))
 }
 cat(":::\n\n")
 ```
 
 ```{r fig.width=15, fig.height=8}
-plot_expr_heatmap_combined(expr_long)
+p_combined <- plot_expr_heatmap_combined(expr_long)
+p_combined
+ggsave("heatmap_combined.png", plot = p_combined, width = 15, height = 8, dpi = 300, bg = "white")
+```
+
+```{r echo=FALSE, results='asis'}
+cat('<a href="heatmap_combined.png" download="heatmap_combined.png" ',
+    'style="display:inline-block;margin:4px 0 8px;padding:4px 10px;',
+    'background:#2166AC;color:#fff;border-radius:4px;text-decoration:none;font-size:0.85em;">',
+    '\u2b07 Download high-res combined heatmap</a>\n', sep = "")
 ```
 
 ::: {.callout-note collapse="true"}
 # Session Info
 
-```{r session-info}
+```{r}
 #| label: session-info
 sessionInfo()
 ```
