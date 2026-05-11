@@ -523,20 +523,25 @@ plot_expr_heatmap_combined <- function(expr_long) {
 ```
 
 ```{r results='asis', fig.width=10, fig.height=8}
+dl_button <- function(plot, filename, width, height) {
+  tmp <- tempfile(fileext = ".png")
+  ggsave(tmp, plot = plot, width = width, height = height, dpi = 300, bg = "white")
+  b64 <- base64enc::base64encode(tmp)
+  cat(paste0(
+    '<a href="data:image/png;base64,', b64, '" download="', filename, '" ',
+    'style="display:inline-block;margin:4px 0 8px;padding:4px 10px;',
+    'background:#2166AC;color:#fff;border-radius:4px;text-decoration:none;font-size:0.85em;">',
+    '\u2b07 Download high-res PNG</a>\n\n'
+  ))
+}
+
 groups <- c("WT", "BXBN", "BU")
 cat("::: {.panel-tabset}\n\n")
 for (grp in groups) {
   cat(paste0("### ", grp, "\n\n"))
   p_grp <- plot_expr_heatmap(expr_long, grp)
   print(p_grp)
-  fname <- paste0("heatmap_", grp, ".png")
-  ggsave(fname, plot = p_grp, width = 10, height = 8, dpi = 300, bg = "white")
-  cat(paste0(
-    '<a href="', fname, '" download="', fname, '" ',
-    'style="display:inline-block;margin:4px 0 8px;padding:4px 10px;',
-    'background:#2166AC;color:#fff;border-radius:4px;text-decoration:none;font-size:0.85em;">',
-    '\u2b07 Download high-res (', grp, ')</a>\n\n'
-  ))
+  dl_button(p_grp, paste0("heatmap_", grp, ".png"), width = 10, height = 8)
 }
 cat(":::\n\n")
 ```
@@ -544,14 +549,10 @@ cat(":::\n\n")
 ```{r fig.width=15, fig.height=8}
 p_combined <- plot_expr_heatmap_combined(expr_long)
 p_combined
-ggsave("heatmap_combined.png", plot = p_combined, width = 15, height = 8, dpi = 300, bg = "white")
 ```
 
 ```{r echo=FALSE, results='asis'}
-cat('<a href="heatmap_combined.png" download="heatmap_combined.png" ',
-    'style="display:inline-block;margin:4px 0 8px;padding:4px 10px;',
-    'background:#2166AC;color:#fff;border-radius:4px;text-decoration:none;font-size:0.85em;">',
-    '\u2b07 Download high-res combined heatmap</a>\n', sep = "")
+dl_button(p_combined, "heatmap_combined.png", width = 15, height = 8)
 ```
 
 ::: {.callout-note collapse="true"}
