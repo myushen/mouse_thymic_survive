@@ -170,7 +170,15 @@ res_comp <- sccomp_estimate(
 
 p <- res_comp |>
   sccomp_boxplot(factor = "group",
-                 remove_unwanted_effects = TRUE)
+                 remove_unwanted_effects = TRUE) +
+   scale_fill_manual(
+    values = c(
+      "c_groupBU"   = "yellow",
+      "c_groupBXBN" = "grey60",
+      "NA"          = "transparent"
+    ),
+    na.value = "transparent"
+  )
 ```
 
 ## Visualisation and summary plot
@@ -211,7 +219,15 @@ res_comp_gender <- sccomp_estimate(
 
 p <- res_comp_gender |>
   sccomp_boxplot(factor = "Gender",
-                 remove_unwanted_effects = TRUE)
+                 remove_unwanted_effects = TRUE) +
+   scale_fill_manual(
+    values = c(
+      "c_groupBU"   = "yellow",
+      "c_groupBXBN" = "grey60",
+      "NA"          = "transparent"
+    ),
+    na.value = "transparent"
+  )
 
 ```
 
@@ -552,7 +568,226 @@ p_combined
 ```
 
 ```{r echo=FALSE, results='asis'}
-dl_button(p_combined, "heatmap_combined.png", width = 15, height = 8)
+dl_button(p_combined, "heatmap_combined.png", width = 18, height = 8)
+```
+
+
+# Marker gene differential expression by genotype
+
+This section compares pseudobulk expression of selected marker genes between genotypes within specific mimetic populations: **Ccl20** in Microfold cells, **Clca3b** in Neuroendocrine cells,  **Dclk1** in Tuft1, **Ascl3** in Ionocytes and **Ccdc153** in Ciliated cells. Differential expression is estimated with edgeR quasi-likelihood on sample-level pseudobulk counts, with WT as the reference genotype (BXBN vs WT; BU vs WT). Raw **p-values** are shown on the logCPM boxplots.
+
+
+```{r}
+marker_gene_targets <- tibble::tribble(
+  ~gene_symbol, ~cell_type,
+  "Ccl20",    "Microfold",
+  "Clca3b",   "Neuroendocrine",
+  "Dclk1",    "Tuft1",
+  "Ascl3",    "Ionocytes",
+  "Ccdc153",  "Ciliated"
+)
+
+marker_gene_map <- AnnotationDbi::mapIds(
+  EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+  keys = marker_gene_targets$gene_symbol,
+  column = "GENEID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+) |>
+  tibble::enframe("gene_symbol", "ensemble_id") |>
+  mutate(
+    ensemble_id = dplyr::case_when(
+      gene_symbol == "Ccl20"   ~ "ENSMUSG00000026166",
+      gene_symbol == "Clca3b"  ~ "ENSMUSG00000037033",
+      TRUE ~ ensemble_id
+    ),
+    exist_in_object = ensemble_id %in% rownames(counts_pb)
+  ) |>
+  left_join(marker_gene_targets, by = "gene_symbol")
+
+marker_gene_map |> DT::datatable(filter = "top")
+
+marker_genotype_cols <- function(cell_type) {
+  grepl(cell_type, colnames(counts_pb), fixed = TRUE)
+}
+
+parse_pseudobulk_meta <- function(sample_names) {
+  meta <- data.frame(sample = sample_names)
+  meta$group <- sub("_.*", "", meta$sample)
+  meta$group <- ifelse(
+    meta$group == "BU?.56",
+    "WT",
+    sub("\\..*", "", meta$group)
+  )
+  meta$group <- factor(meta$group, levels = c("WT", "BXBN", "BU"))
+  meta
+}
+
+run_marker_gene_de <- function(gene_symbol, ensemble_id, cell_type) {
+  ct_cols <- marker_genotype_cols(cell_type)
+  if (!any(ct_cols)) {
+    return(list(de = NULL, plot = NULL))
+  }
+
+  counts_ct <- counts_pb[, ct_cols, drop = FALSE]
+  logcpm_ct <- logcpm_pb[, ct_cols, drop = FALSE]
+
+  meta <- parse_pseudobulk_meta(colnames(counts_ct))
+  meta <- meta |> filter(group %in% c("WT", "BXBN", "BU"))
+
+  if (nrow(meta) < 3 || length(unique(meta$group)) < 2) {
+    return(list(de = NULL, plot = NULL))
+  }
+
+  if (!ensemble_id %in% rownames(counts_ct)) {
+    return(list(de = NULL, plot = NULL))
+  }
+
+  design <- stats::model.matrix(~ group, data = meta)
+  y <- edgeR::DGEList(counts = counts_ct, group = meta$group)
+  y <- edgeR::calcNormFactors(y)
+  y <- edgeR::estimateDisp(y, design)
+  fit <- edgeR::glmQLFit(y, design)
+
+  test_coef <- function(coef_name) {
+    if (!coef_name %in% colnames(design)) {
+      return(NULL)
+    }
+    edgeR::glmQLFTest(fit, coef = coef_name) |>
+      edgeR::topTags(n = Inf) |>
+      as.data.frame()
+  }
+
+  res_bxbn <- test_coef("groupBXBN")
+  res_bu <- test_coef("groupBU")
+
+  if (is.null(res_bxbn) && is.null(res_bu)) {
+    return(list(de = NULL, plot = NULL))
+  }
+
+  empty_res <- data.frame(
+    logFC = NA_real_,
+    logCPM = NA_real_,
+    F = NA_real_,
+    PValue = NA_real_,
+    FDR = NA_real_
+  )
+
+  res_bxbn_gene <- if (!is.null(res_bxbn) && ensemble_id %in% rownames(res_bxbn)) {
+    res_bxbn[ensemble_id, , drop = FALSE]
+  } else {
+    empty_res
+  }
+
+  res_bu_gene <- if (!is.null(res_bu) && ensemble_id %in% rownames(res_bu)) {
+    res_bu[ensemble_id, , drop = FALSE]
+  } else {
+    empty_res
+  }
+
+  de_tbl <- tibble::tibble(
+    gene_symbol = gene_symbol,
+    cell_type = cell_type,
+    ensemble_id = ensemble_id,
+    comparison = c("BXBN vs WT", "BU vs WT"),
+    logFC = c(res_bxbn_gene$logFC, res_bu_gene$logFC),
+    logCPM = c(res_bxbn_gene$logCPM, res_bu_gene$logCPM),
+    F = c(res_bxbn_gene$F, res_bu_gene$F),
+    PValue = c(res_bxbn_gene$PValue, res_bu_gene$PValue),
+    FDR = c(res_bxbn_gene$FDR, res_bu_gene$FDR)
+  )
+
+  meta$expression <- as.numeric(logcpm_ct[ensemble_id, meta$sample])
+
+  pval_bxbn <- if (is.na(res_bxbn_gene$PValue)) "NA" else signif(res_bxbn_gene$PValue, 2)
+  pval_bu <- if (is.na(res_bu_gene$PValue)) "NA" else signif(res_bu_gene$PValue, 2)
+
+  comparisons <- list()
+  annotations <- c()
+  if (!is.na(res_bxbn_gene$PValue)) {
+    comparisons <- c(comparisons, list(c("WT", "BXBN")))
+    annotations <- c(annotations, paste0("p = ", pval_bxbn))
+  }
+  if (!is.na(res_bu_gene$PValue)) {
+    comparisons <- c(comparisons, list(c("WT", "BU")))
+    annotations <- c(annotations, paste0("p = ", pval_bu))
+  }
+
+  p <- ggplot(meta, aes(x = group, y = expression, fill = group)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.6, width = 0.5) +
+    geom_jitter(aes(color = group), width = 0.15, size = 2.5)
+
+  if (length(comparisons) > 0) {
+    p <- p + ggsignif::geom_signif(
+      comparisons = comparisons,
+      annotations = annotations,
+      step_increase = 0.1,
+      tip_length = 0.01
+    )
+  }
+
+  p <- p +
+    scale_fill_manual(values = c("WT" = "transparent", "BXBN" = "#999999", "BU" = "#E69F00")) +
+    scale_color_manual(values = c("WT" = "transparent", "BXBN" = "#999999", "BU" = "#E69F00")) +
+    labs(
+      title = paste0(gene_symbol, " expression in ", cell_type, " cells"),
+      subtitle = paste0(
+        "BXBN vs WT: p = ", pval_bxbn,
+        "  |  BU vs WT: p = ", pval_bu, "  (edgeR glmQL)"
+      ),
+      x = NULL,
+      y = "logCPM (pseudobulk)"
+    ) +
+    theme_classic(base_size = 13) +
+    theme(legend.position = "none")
+
+  list(de = de_tbl, plot = p)
+}
+
+marker_de_results <- marker_gene_map |>
+  filter(exist_in_object) |>
+  purrr::pmap(function(gene_symbol, ensemble_id, exist_in_object, cell_type) {
+    res <- run_marker_gene_de(gene_symbol, ensemble_id, cell_type)
+    list(
+      gene_symbol = gene_symbol,
+      cell_type = cell_type,
+      de = res$de,
+      plot = res$plot
+    )
+  })
+
+marker_de_table <- marker_de_results |>
+  purrr::map_dfr(function(res) {
+    if (is.null(res$de)) {
+      return(NULL)
+    }
+    res$de
+  })
+
+marker_de_table |> DT::datatable(filter = "top", extensions = "Buttons",
+  options = list(
+    dom = "Bfrtip",
+    buttons = c("csv", "excel", "pdf", "print"),
+    lengthMenu = list(c(10, 25, 50, -1), c("10", "25", "50", "All"))
+  ))
+```
+
+```{r results='asis', fig.width=8, fig.height=6}
+cat("::: {.panel-tabset}\n\n")
+
+for (res in marker_de_results) {
+  cat(paste0("## ", res$gene_symbol, " (", res$cell_type, ")\n\n"))
+
+  if (is.null(res$plot)) {
+    cat("Insufficient pseudobulk samples or gene not found for this cell type.\n\n")
+    next
+  }
+
+  print(res$plot)
+  cat("\n\n")
+}
+
+cat(":::\n\n")
 ```
 
 ::: {.callout-note collapse="true"}
