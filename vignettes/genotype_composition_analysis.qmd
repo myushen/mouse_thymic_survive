@@ -173,8 +173,8 @@ p <- res_comp |>
                  remove_unwanted_effects = TRUE) +
    scale_fill_manual(
     values = c(
-      "c_groupBU"   = "yellow",
-      "c_groupBXBN" = "grey60",
+      "c_groupBU"   = "#E69F00",
+      "c_groupBXBN" = "#999999",
       "NA"          = "transparent"
     ),
     na.value = "transparent"
@@ -219,15 +219,7 @@ res_comp_gender <- sccomp_estimate(
 
 p <- res_comp_gender |>
   sccomp_boxplot(factor = "Gender",
-                 remove_unwanted_effects = TRUE) +
-   scale_fill_manual(
-    values = c(
-      "c_groupBU"   = "yellow",
-      "c_groupBXBN" = "grey60",
-      "NA"          = "transparent"
-    ),
-    na.value = "transparent"
-  )
+                 remove_unwanted_effects = TRUE)
 
 ```
 
@@ -728,7 +720,7 @@ run_marker_gene_de <- function(gene_symbol, ensemble_id, cell_type) {
 
   p <- p +
     scale_fill_manual(values = c("WT" = "transparent", "BXBN" = "#999999", "BU" = "#E69F00")) +
-    scale_color_manual(values = c("WT" = "transparent", "BXBN" = "#999999", "BU" = "#E69F00")) +
+    scale_color_manual(values = c("WT" = "black", "BXBN" = "#999999", "BU" = "#E69F00")) +
     labs(
       title = paste0(gene_symbol, " expression in ", cell_type, " cells"),
       subtitle = paste0(
