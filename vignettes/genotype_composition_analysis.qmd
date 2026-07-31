@@ -26,10 +26,14 @@ editor: source
 
 This report builds on the mouse thymic project, following quality control report (mouse_thymic_quality_report-2026-04-22.html) and the agreed cell type clusters.
 
--   Aim: Test whether the composition of TEC clusters differs across genotypes, and characterise transcriptional differences in apoptotic pathways across mimetic populations. This is addressed through compositional modelling (sccomp), pseudobulk gene expression boxplots stratified by genotype and cell type, and summary heatmaps.\
+-   Aim: Test whether the composition of TEC clusters differs across genotypes, and characterise transcriptional differences in apoptotic and pro-survival pathways across mimetic populations. Analyses include:
+    -   Compositional modelling with sccomp (genotype effects)
+    -   Pseudobulk apoptotic gene expression (intrinsic, extrinsic, and non-canonical NF-κB), stratified by genotype within cell type and by cell type within genotype, plus summary heatmaps
+    -   Marker-gene differential expression between genotypes within selected mimetic populations (edgeR on pseudobulk counts)
+    -   BCL2-family pro-survival protein markers (Bcl2, Bcl2l1 / BclxL, Mcl1) visualised as violin densities and boxplots with jittered sample points
 -   Genotypes and hypotheses:
     -   WT: baseline.
-    -   BXBN knockout: apoptosis blocked (expected increase in mimetic cells)\
+    -   BXBN knockout: apoptosis blocked (expected increase in mimetic cells)
     -   BU knockout: pro-survival lost (expected decrease in mimetic cells)
 
 # Set up
@@ -781,6 +785,184 @@ for (res in marker_de_results) {
 
 cat(":::\n\n")
 ```
+
+# Pro-survival protein marker expression across mimetic populations
+
+Expression of BCL2-family pro-survival proteins (Bcl2, Bcl2l1 / BclxL, Mcl1) across all mimetic cell types, coloured by genotype. For each gene, the **Violin** tab shows the pseudobulk logCPM density; the **Boxplot** tab shows median/IQR with jittered sample points. Note: violins show kernel-density estimates. Density tails may extend beyond the observed range due to smoothing and do not represent observed expression values.
+
+```{r}
+protein_markers <- tibble::tribble(
+  ~gene_symbol,
+  "Bcl2",
+  "Bcl2l1",
+  "Mcl1"
+)
+
+protein_marker_map <- AnnotationDbi::mapIds(
+  EnsDb.Mmusculus.v79::EnsDb.Mmusculus.v79,
+  keys    = protein_markers$gene_symbol,
+  column  = "GENEID",
+  keytype = "SYMBOL",
+  multiVals = "first"
+) |>
+  tibble::enframe("gene_symbol", "ensemble_id") |>
+  mutate(exist_in_object = ensemble_id %in% rownames(logcpm_pb))
+
+protein_marker_map |> DT::datatable(filter = "top")
+```
+
+```{r}
+protein_expr_long <- protein_marker_map |>
+  filter(!is.na(ensemble_id), exist_in_object) |>
+  purrr::pmap_dfr(function(gene_symbol, ensemble_id, exist_in_object) {
+    # Capture scalars before mutate() so the new column doesn't shadow them
+    gsym      <- gene_symbol
+    eid       <- ensemble_id
+    expr_vals <- as.numeric(logcpm_pb[eid, ])
+    meta_tbl |>
+      mutate(
+        gene_symbol = gsym,
+        ensemble_id = eid,
+        logCPM      = expr_vals,
+        group       = factor(group, levels = c("WT", "BXBN", "BU"))
+      )
+  }) |>
+  mutate(cell_type = factor(cell_type, levels = sort(unique(cell_type))))
+```
+
+```{r}
+plot_protein_violin <- function(data, gene_sym) {
+  data |>
+    filter(gene_symbol == gene_sym) |>
+    ggplot(aes(x = cell_type, y = logCPM, fill = group)) +
+    geom_violin(
+      trim     = FALSE,
+      scale    = "width",
+      width    = 0.35,
+      position = position_dodge(width = 0.5),
+      alpha    = 0.65
+    ) +
+    scale_fill_manual(
+      values = c("WT" = "#4E9AF1", "BXBN" = "#999999", "BU" = "#E69F00")
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title      = element_text(size = 18, face = "bold"),
+      axis.text.x     = element_text(angle = 45, hjust = 1, size = 12),
+      axis.title      = element_text(size = 14),
+      legend.position = "right",
+      legend.title    = element_text(size = 13),
+      legend.text     = element_text(size = 11),
+      strip.text      = element_text(face = "bold", size = 13),
+      plot.caption    = element_text(size = 9, color = "grey40", hjust = 0)
+    ) +
+    labs(
+      title   = gene_sym,
+      x       = "Mimetic cell type",
+      y       = "logCPM (pseudobulk)",
+      fill    = "Genotype",
+      caption = "Note: violins show kernel-density estimates (trim = FALSE). Density tails may\nextend beyond the observed range due to smoothing and do not represent observed expression values."
+    )
+}
+
+plot_protein_boxplot <- function(data, gene_sym) {
+  data |>
+    filter(gene_symbol == gene_sym) |>
+    ggplot(aes(x = cell_type, y = logCPM, fill = group, color = group)) +
+    geom_boxplot(
+      width         = 0.6,
+      position      = position_dodge(width = 0.75),
+      outlier.shape = NA,
+      alpha         = 0.5
+    ) +
+    geom_jitter(
+      position = position_jitterdodge(
+        jitter.width = 0.15,
+        dodge.width  = 0.75
+      ),
+      size  = 1,
+      alpha = 0.7
+    ) +
+    scale_fill_manual(
+      values = c("WT" = "#4E9AF1", "BXBN" = "#999999", "BU" = "#E69F00")
+    ) +
+    scale_color_manual(
+      values = c("WT" = "#2266BB", "BXBN" = "#555555", "BU" = "#B07000")
+    ) +
+    expand_limits(y = 0) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title      = element_text(size = 18, face = "bold"),
+      axis.text.x     = element_text(angle = 45, hjust = 1, size = 12),
+      axis.title      = element_text(size = 14),
+      legend.position = "right",
+      legend.title    = element_text(size = 13),
+      legend.text     = element_text(size = 11),
+      strip.text      = element_text(face = "bold", size = 13)
+    ) +
+    labs(
+      title = gene_sym,
+      x     = "Mimetic cell type",
+      y     = "logCPM (pseudobulk)",
+      fill  = "Genotype",
+      color = "Genotype"
+    )
+}
+```
+
+## Bcl2
+
+::: {.panel-tabset}
+
+### Violin
+
+```{r fig.width=11, fig.height=6}
+plot_protein_violin(protein_expr_long, "Bcl2")
+```
+
+### Boxplot
+
+```{r fig.width=11, fig.height=6}
+plot_protein_boxplot(protein_expr_long, "Bcl2")
+```
+
+:::
+
+## Bcl2l1 (BclxL)
+
+::: {.panel-tabset}
+
+### Violin
+
+```{r fig.width=11, fig.height=6}
+plot_protein_violin(protein_expr_long, "Bcl2l1")
+```
+
+### Boxplot
+
+```{r fig.width=11, fig.height=6}
+plot_protein_boxplot(protein_expr_long, "Bcl2l1")
+```
+
+:::
+
+## Mcl1
+
+::: {.panel-tabset}
+
+### Violin
+
+```{r fig.width=11, fig.height=6}
+plot_protein_violin(protein_expr_long, "Mcl1")
+```
+
+### Boxplot
+
+```{r fig.width=11, fig.height=6}
+plot_protein_boxplot(protein_expr_long, "Mcl1")
+```
+
+:::
 
 ::: {.callout-note collapse="true"}
 # Session Info
